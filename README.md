@@ -3,6 +3,25 @@
 M2OS is a modular HUD for CC:Tweaked and Advanced Peripherals 0.8.2a. It does
 not modify or start `d.lua`.
 
+## One-command install
+
+On the Smart Glasses computer:
+
+```text
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua glasses
+```
+
+On the computer connected to the Create storage network:
+
+```text
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua server
+```
+
+Use `all` instead of `glasses` or `server` to install both roles. Running the
+same command again updates the code. Existing `m2os/config.lua` and
+`m2os/server_config.lua` are preserved; replaced program files receive a `.bak`
+backup.
+
 ## Start
 
 On the pocket computer inside the Smart Glasses:
