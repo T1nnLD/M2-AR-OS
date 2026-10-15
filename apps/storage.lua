@@ -241,7 +241,8 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 end)
                 return true
             end
-        elseif event == "keyboard_close" or event == "glasses_key_pressed" then
+        elseif event == "keyboard_close"
+                or (event == "glasses_key_pressed" and not ctx.system.getModule("keyboard")) then
             togglePanel(ctx)
             return true
         end

@@ -129,6 +129,11 @@ function app.onEvent(ctx, event, ...)
     elseif event == "keyboard_close" then
         hide(ctx, true)
     elseif event == "glasses_key_pressed" then
+        -- Keyboard Module and Hotkey Module share the same Minecraft key (G by
+        -- default). With both installed, pressing G first emits keyboard_open
+        -- and releasing it emits glasses_key_pressed. Treat the latter as a
+        -- duplicate, otherwise the radial menu immediately closes again.
+        if state.keyboard then return true end
         if state.visible then hide(ctx, true) else show(ctx, true) end
     elseif event == "player_mouse_move" and state.visible then
         local values = numericArguments(...)

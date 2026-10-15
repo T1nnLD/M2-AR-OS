@@ -36,6 +36,8 @@ radial menu are remembered there.
 The radial menu reacts to the Keyboard module (`keyboard_open`, mouse movement,
 scroll and click) and to the Hotkey module (`glasses_key_pressed`). With only a
 Hotkey module, press once to open it and again to run the selected action.
+When both modules are installed they share the same Minecraft key; M2OS ignores
+the duplicate Hotkey event and lets the Keyboard module control the menu.
 
 Inside the Create Storage panel, use the wheel to select an item. Left click
 takes one, right click takes a stack, middle click deposits the held item, and
