@@ -40,6 +40,21 @@ api.registerApp(app)
 return app
 ```
 
+Menu actions release Keyboard Module mouse capture after execution. An
+interactive app can keep input by setting `keepInput = true`:
+
+```lua
+ctx.menu.add({
+    id = "sample.window",
+    label = "SAMPLE WINDOW",
+    keepInput = true,
+    run = function() ctx.system.setInputMode("sample") end
+})
+```
+
+Claiming an input mode during `run` also keeps capture automatically. Clear it
+with `ctx.system.setInputMode(nil)` when the interactive window closes.
+
 ## Lifecycle
 
 - `start(ctx)` runs when enabled.

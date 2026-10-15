@@ -18,7 +18,8 @@ local state = {
     expires = 0,
     actions = {},
     armed = false,
-    keyboard = nil
+    keyboard = nil,
+    drawAt = nil
 }
 
 local function atan2(y, x)
@@ -78,17 +79,33 @@ local function show(ctx, armed)
     state.armed = armed == true
     state.pointerX, state.pointerY = 0, -1
     state.expires = util.epoch() + 3500
-    draw(ctx)
+    state.actions = ctx.menu.getAll()
+
+    -- KeyboardScreen changes the client GUI geometry. Its new size arrives at
+    -- the glasses computer a few ticks after keyboard_open, so an immediate
+    -- draw briefly uses the old top-left-relative centre and then jumps.
+    state.drawAt = util.epoch() + (state.keyboard and 150 or 50)
+    ctx.ui.clear()
+    if state.keyboard then pcall(state.keyboard.setCaptureMouse, true) end
 end
 
 local function hide(ctx, execute)
     if not state.visible then return end
     local action = state.armed and state.actions[state.selected] or nil
     state.visible = false
+    state.drawAt = nil
     ctx.ui.clear()
+    local keepInput = false
     if execute and action then
         local ok, err = pcall(action.run)
         if not ok then ctx.notify("Menu: " .. tostring(err), ctx.config.theme.red) end
+
+        -- Interactive apps keep input explicitly (or claim an input mode).
+        -- Plain toggles return the mouse to normal game control immediately.
+        keepInput = action.keepInput == true or ctx.system.getInputMode() ~= nil
+    end
+    if state.keyboard and not keepInput then
+        pcall(state.keyboard.setCaptureMouse, false)
     end
 end
 
@@ -100,7 +117,7 @@ local function selectFromPointer(ctx)
     state.armed = true
     if index ~= state.selected then
         state.selected = index
-        draw(ctx)
+        if not state.drawAt then draw(ctx) end
     end
 end
 
@@ -148,7 +165,7 @@ function app.onEvent(ctx, event, ...)
         state.armed = true
         state.selected = ((state.selected - 1 + (direction > 0 and 1 or -1)) % #state.actions) + 1
         state.expires = util.epoch() + 3500
-        draw(ctx)
+        if not state.drawAt then draw(ctx) end
     elseif event == "player_mouse_click" and state.visible then
         hide(ctx, true)
     elseif event == "m2os_refresh" then
@@ -161,17 +178,22 @@ function app.onEvent(ctx, event, ...)
 end
 
 function app.update(ctx, now)
+    if state.visible and state.drawAt and now >= state.drawAt then
+        state.drawAt = nil
+        draw(ctx)
+    end
     if state.visible and now >= state.expires then hide(ctx, false) end
 end
 
 function app.resize(ctx)
-    if state.visible then draw(ctx) end
+    if state.visible and not state.drawAt then draw(ctx) end
 end
 
 function app.stop(ctx)
     if state.keyboard then pcall(state.keyboard.setCaptureMouse, false) end
     state.keyboard = nil
     state.visible = false
+    state.drawAt = nil
     ctx.ui.clear()
 end
 

@@ -170,6 +170,7 @@ function app.start(ctx)
     })
     ctx.menu.add({
         id = "storage.panel", label = "CREATE STORAGE", order = 30,
+        keepInput = true,
         checked = function() return state.panelOpen end,
         run = function() togglePanel(ctx) end
     })
@@ -213,8 +214,9 @@ function app.onEvent(ctx, event, sender, message, protocol)
             drawPanel(ctx)
             return true
         elseif event == "player_mouse_click" then
-            local button = tonumber(sender) or 0
-            if button == 2 then
+            -- AP reports mouse buttons as 1=left, 2=right, 3=middle.
+            local button = tonumber(sender) or 1
+            if button == 3 then
                 send(ctx, "deposit", { hand = true, count = 64 }, function(ok, data, err)
                     ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
                         or ("Deposit: " .. tostring(err)),
@@ -222,7 +224,7 @@ function app.onEvent(ctx, event, sender, message, protocol)
                     refresh(ctx)
                 end)
             else
-                transfer(ctx, "withdraw", button == 1 and 64 or 1)
+                transfer(ctx, "withdraw", button == 2 and 64 or 1)
             end
             return true
         elseif event == "key" and keys then
