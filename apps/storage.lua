@@ -15,6 +15,7 @@ local PANEL_SETTLE_MS = 180
 local DEFAULT_GRID_COLUMNS = 8
 local DEFAULT_GRID_ROWS = 4
 local SLOT_SIZE = 28
+local SEARCH_DELAY_MS = 300
 
 local state = {
     modemName = nil,
@@ -32,7 +33,13 @@ local state = {
     drawAt = nil,
     widgets = nil,
     pointerX = nil,
-    pointerY = nil
+    pointerY = nil,
+    query = "",
+    appliedQuery = "",
+    searchActive = false,
+    searchAt = nil,
+    ignoreNextChar = false,
+    stockGeneration = 0
 }
 
 local function objectCall(object, method, ...)
@@ -126,11 +133,6 @@ local function compactCount(value)
     return tostring(value)
 end
 
-local function itemNamespace(item)
-    local namespace = tostring(item and item.name or "items"):match("^([^:]+):")
-    return (namespace or "items"):upper()
-end
-
 local function ensureVisible(pageSize)
     if #state.rows == 0 then
         state.selected, state.offset = 1, 1
@@ -174,18 +176,46 @@ local function updatePanel(ctx)
     local selectedItem = state.rows[state.selected]
     local totalPages = math.max(1, math.ceil(#state.rows / widgets.pageSize))
     local currentPage = math.floor((state.offset - 1) / widgets.pageSize) + 1
-    setCached(widgets, "categoryText", widgets.category, "setContent",
-        selectedItem and ("v " .. itemNamespace(selectedItem)) or "v STORAGE")
+    local searchText
+    if state.query ~= "" then
+        searchText = (state.searchActive and "> " or "SEARCH: ") .. state.query
+    else
+        searchText = state.searchActive and "> " or "SEARCH... [F]"
+    end
+    setCached(widgets, "searchTextValue", widgets.searchText, "setContent", searchText)
+    setCached(widgets, "searchTextColor", widgets.searchText, "setColor",
+        state.searchActive and theme.white or theme.gray)
+    setCached(widgets, "searchBackgroundColor", widgets.searchBackground, "setColor",
+        state.searchActive and theme.purple or theme.blue)
+    setCached(widgets, "searchBackgroundOpacity", widgets.searchBackground,
+        "setOpacity", state.searchActive and 0.48 or 0.24)
     setCached(widgets, "pageText", widgets.page, "setContent",
         ("%d/%d"):format(currentPage, totalPages))
     setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
         selectedItem and util.short(util.itemLabel(selectedItem), 34) or "")
 
+    local trackHeight = widgets.gridRows * widgets.slotSize - 2
+    local thumbHeight = math.max(12, trackHeight / totalPages)
+    local thumbTravel = math.max(0, trackHeight - thumbHeight)
+    local thumbTop = widgets.gridY + 1
+        + (totalPages > 1 and (currentPage - 1) / (totalPages - 1) * thumbTravel or 0)
+    if widgets.thumbHeight ~= thumbHeight then
+        widgets.thumbHeight = thumbHeight
+        objectCall(widgets.scrollThumb, "setSizes", 3, thumbHeight)
+    end
+    local thumbCenter = thumbTop + thumbHeight / 2
+    if widgets.thumbCenter ~= thumbCenter then
+        widgets.thumbCenter = thumbCenter
+        objectCall(widgets.scrollThumb, "setPos", widgets.scrollX, thumbCenter, 79)
+    end
+    setCached(widgets, "scrollOpacity", widgets.scrollThumb, "setOpacity",
+        totalPages > 1 and 0.95 or 0.32)
+
     for visibleIndex, entry in ipairs(widgets.rows) do
         local index = state.offset + visibleIndex - 1
         local item = state.rows[index]
         if item then
-            local opacity = index == state.selected and 0.62 or 0.20
+            local opacity = index == state.selected and 0.92 or 0.72
             setCached(entry, "backgroundColor", entry.background, "setColor",
                 index == state.selected and theme.purple or theme.blue)
             setCached(entry, "backgroundOpacity", entry.background, "setOpacity", opacity)
@@ -199,7 +229,7 @@ local function updatePanel(ctx)
                 compactCount(item.count))
             setCached(entry, "countColor", entry.count, "setColor", theme.white)
         else
-            setCached(entry, "backgroundOpacity", entry.background, "setOpacity", 0.08)
+            setCached(entry, "backgroundOpacity", entry.background, "setOpacity", 0.36)
             if entry.item and entry.itemName ~= "" then
                 entry.itemName = ""
                 objectCall(entry.item, "setItem")
@@ -222,33 +252,41 @@ local function drawPanel(ctx)
     if not state.panelOpen or state.drawAt then return end
     local width, height = ctx.system.getSize()
     local theme = ctx.config.theme
-    local panelW, panelH = math.min(292, width - 30), math.min(190, height - 30)
+    local panelW, panelH = math.min(292, width - 30), math.min(204, height - 30)
     local x, y = (width - panelW) / 2, (height - panelH) / 2
     local columns = math.max(1, math.min(
         ctx.config.storage.gridColumns or DEFAULT_GRID_COLUMNS,
         math.floor((panelW - 18) / SLOT_SIZE)))
     local gridRows = math.max(1, math.min(
         ctx.config.storage.gridRows or DEFAULT_GRID_ROWS,
-        math.floor((panelH - 70) / SLOT_SIZE)))
+        math.floor((panelH - 84) / SLOT_SIZE)))
     local gridW = columns * SLOT_SIZE
-    local gridX, gridY = x + (panelW - gridW) / 2, y + 33
+    local gridX, gridY = x + (panelW - gridW) / 2 - 3, y + 43
+    local scrollX = gridX + gridW + 7
     local widgets = {
         rows = {}, columns = columns, gridRows = gridRows,
         pageSize = columns * gridRows, slotSize = SLOT_SIZE,
-        gridX = gridX, gridY = gridY,
+        gridX = gridX, gridY = gridY, scrollX = scrollX,
+        searchX = gridX, searchY = y + 22, searchW = gridW, searchH = 15,
+        scrollY = gridY + 1, scrollH = gridRows * SLOT_SIZE - 2,
         panelX = x, panelY = y, panelW = panelW, panelH = panelH
     }
     state.widgets = widgets
 
-    ctx.ui.textureRect(x, y, panelW, panelH, theme.background, 0.90, 70)
+    -- A Rectangle is reliably opaque in AP 0.8.2a. Texture-based solid fills
+    -- can still blend with the world even at opacity=1 on some render paths.
+    ctx.ui.rectangle(x, y, panelW, panelH, theme.background, 1, 70)
     ctx.ui.rectangle(x, y, panelW, 2, theme.purple, 1, 72)
     ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, theme.blue, 1, 72)
     ctx.ui.text(x + 9, y + 7, "M2OS STORAGE", theme.white, 1.05, 75)
     widgets.status = ctx.ui.text(x + panelW - 87, y + 8, state.status,
         theme.gray, 0.75, 75)
-    widgets.category = ctx.ui.text(gridX, y + 23, "v STORAGE", theme.gray, 0.72, 75)
-    widgets.page = ctx.ui.text(x + panelW - 37, y + 23, "1/1", theme.gray, 0.65, 75)
-    widgets.empty = ctx.ui.text(x + 10, y + 35, "", theme.gray, 0.78, 75)
+    widgets.searchBackground = ctx.ui.rectangle(
+        gridX, y + 22, gridW, 15, theme.blue, 0.24, 73)
+    widgets.searchText = ctx.ui.text(
+        gridX + 5, y + 25, "SEARCH... [F]", theme.gray, 0.66, 76)
+    widgets.page = ctx.ui.text(x + panelW - 37, y + 26, "1/1", theme.gray, 0.65, 76)
+    widgets.empty = ctx.ui.text(x + 10, y + 47, "", theme.gray, 0.78, 83)
     for visibleIndex = 1, widgets.pageSize do
         local column = (visibleIndex - 1) % columns
         local row = math.floor((visibleIndex - 1) / columns)
@@ -261,7 +299,7 @@ local function drawPanel(ctx)
         })
         widgets.rows[visibleIndex] = {
             background = ctx.ui.rectangle(slotX, slotY, SLOT_SIZE - 2, SLOT_SIZE - 2,
-                theme.blue, 0.12, 73),
+                theme.blue, 0.72, 73),
             item = okItem and itemObject or nil,
             fallback = not okItem and ctx.ui.text(
                 iconX - 3, iconY - 5, "", theme.gray, 0.9, 79) or nil,
@@ -269,6 +307,10 @@ local function drawPanel(ctx)
                 "", theme.white, 0.58, 82)
         }
     end
+    widgets.scrollTrack = ctx.ui.rectangle(scrollX - 1.5, gridY + 1,
+        3, gridRows * SLOT_SIZE - 2, theme.gray, 0.22, 75)
+    widgets.scrollThumb = ctx.ui.rectangle(scrollX - 1.5, gridY + 1,
+        3, 12, theme.purple, 0.95, 79)
     widgets.selectedLabel = ctx.ui.text(x + 9, y + panelH - 31,
         "", theme.white, 0.72, 84)
     ctx.ui.text(x + 9, y + panelH - 16,
@@ -295,6 +337,7 @@ local function refreshPanel(ctx)
 end
 
 local function refresh(ctx, query)
+    query = tostring(query == nil and state.query or query)
     if not state.serverId then
         state.status = "SEARCHING"
         refreshPanel(ctx)
@@ -310,11 +353,19 @@ local function refresh(ctx, query)
     state.status = "SYNC"
     state.statusDetail = "Reading connected inventories..."
     refreshPanel(ctx)
-    send(ctx, "stock", { query = query or "", limit = 128 }, function(ok, data, err)
+    state.stockGeneration = state.stockGeneration + 1
+    local generation = state.stockGeneration
+    send(ctx, "stock", { query = query, limit = 128 }, function(ok, data, err)
+        if generation ~= state.stockGeneration then return end
         if ok then
             state.rows = sortedStock(data and data.items)
-            state.selected = math.max(1, math.min(state.selected, #state.rows))
-            state.offset = math.max(1, math.min(state.offset, state.selected))
+            if state.appliedQuery ~= query then
+                state.selected, state.offset = 1, 1
+            else
+                state.selected = math.max(1, math.min(state.selected, #state.rows))
+                state.offset = math.max(1, math.min(state.offset, state.selected))
+            end
+            state.appliedQuery = query
             state.status = "ONLINE"
             state.statusDetail = #state.rows == 0 and "Storage is empty" or nil
         else
@@ -334,6 +385,8 @@ local function togglePanel(ctx)
     state.drawAt = nil
     if state.panelOpen then
         state.pointerX, state.pointerY = nil, nil
+        state.searchActive = false
+        state.ignoreNextChar = false
         -- KeyboardScreen reports its final GUI size a few ticks after opening.
         -- Delay the first build so the panel never flashes at the old origin.
         state.drawAt = util.epoch()
@@ -442,9 +495,53 @@ local function numericArguments(...)
     return out
 end
 
+local function pointerInside(x, y, width, height)
+    return state.pointerX and state.pointerY
+        and state.pointerX >= x and state.pointerX < x + width
+        and state.pointerY >= y and state.pointerY < y + height
+end
+
+local function selectPage(ctx, requestedPage)
+    local widgets = state.widgets
+    if not widgets or #state.rows == 0 then return end
+    local totalPages = math.max(1, math.ceil(#state.rows / widgets.pageSize))
+    local page = util.clamp(math.floor(requestedPage), 1, totalPages)
+    local visibleIndex = util.clamp(state.selected - state.offset, 0,
+        widgets.pageSize - 1)
+    state.offset = (page - 1) * widgets.pageSize + 1
+    state.selected = math.min(#state.rows, state.offset + visibleIndex)
+
+    if pointerInside(widgets.gridX, widgets.gridY,
+            widgets.columns * widgets.slotSize,
+            widgets.gridRows * widgets.slotSize) then
+        local column = math.floor((state.pointerX - widgets.gridX) / widgets.slotSize)
+        local row = math.floor((state.pointerY - widgets.gridY) / widgets.slotSize)
+        local pointed = state.offset + row * widgets.columns + column
+        if state.rows[pointed] then state.selected = pointed end
+    end
+    updatePanel(ctx)
+end
+
+local function scheduleSearch(ctx)
+    state.searchAt = util.epoch() + SEARCH_DELAY_MS
+    state.status = "SEARCH"
+    refreshPanel(ctx)
+end
+
 function app.onEvent(ctx, event, sender, message, protocol)
     if state.panelOpen then
-        if event == "player_mouse_move" then
+        if event == "char" and state.searchActive then
+            if state.ignoreNextChar then
+                state.ignoreNextChar = false
+            else
+                local character = tostring(sender or "")
+                if #state.query < 48 and #character > 0 then
+                    state.query = state.query .. character
+                    scheduleSearch(ctx)
+                end
+            end
+            return true
+        elseif event == "player_mouse_move" then
             local values = numericArguments(sender, message, protocol)
             local dx = values[#values - 1] or 0
             local dy = values[#values] or 0
@@ -452,16 +549,36 @@ function app.onEvent(ctx, event, sender, message, protocol)
             return true
         elseif event == "player_mouse_scroll" then
             local direction = tonumber(sender) or 1
-            state.selected = math.max(1, math.min(#state.rows,
-                state.selected + (direction > 0 and 1 or -1)))
-            local page = state.widgets and state.widgets.pageSize or 1
-            ensureVisible(page)
-            positionPointerAtSelected()
-            refreshPanel(ctx)
+            local currentPage = state.widgets
+                and math.floor((state.offset - 1) / state.widgets.pageSize) + 1 or 1
+            selectPage(ctx, currentPage + (direction > 0 and 1 or -1))
             return true
         elseif event == "player_mouse_click" then
             -- AP reports mouse buttons as 1=left, 2=right, 3=middle.
             local button = tonumber(sender) or 1
+            local widgets = state.widgets
+            if widgets and pointerInside(widgets.searchX, widgets.searchY,
+                    widgets.searchW, widgets.searchH) then
+                state.searchActive = true
+                state.ignoreNextChar = false
+                refreshPanel(ctx)
+                return true
+            end
+            if widgets and button == 1
+                    and pointerInside(widgets.scrollX - 5, widgets.scrollY,
+                        10, widgets.scrollH) then
+                local totalPages = math.max(1,
+                    math.ceil(#state.rows / widgets.pageSize))
+                local ratio = util.clamp(
+                    (state.pointerY - widgets.scrollY) / widgets.scrollH, 0, 0.999)
+                selectPage(ctx, math.floor(ratio * totalPages) + 1)
+                return true
+            end
+            if not widgets or not pointerInside(widgets.gridX, widgets.gridY,
+                    widgets.columns * widgets.slotSize,
+                    widgets.gridRows * widgets.slotSize) then return true end
+            state.searchActive = false
+            refreshPanel(ctx)
             if button == 3 then
                 send(ctx, "deposit", { hand = true, count = 64 }, function(ok, data, err)
                     ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
@@ -475,6 +592,30 @@ function app.onEvent(ctx, event, sender, message, protocol)
             return true
         elseif event == "key" and keys then
             local code = tonumber(sender)
+            if state.searchActive then
+                if code == keys.backspace then
+                    state.query = state.query:sub(1, math.max(0, #state.query - 1))
+                    scheduleSearch(ctx)
+                elseif code == keys.delete then
+                    state.query = ""
+                    scheduleSearch(ctx)
+                elseif code == keys.enter or code == keys.numPadEnter then
+                    state.searchActive = false
+                    state.searchAt = nil
+                    refresh(ctx, state.query)
+                elseif code == keys.escape then
+                    state.searchActive = false
+                    state.ignoreNextChar = false
+                    refreshPanel(ctx)
+                end
+                return true
+            end
+            if code == keys.f then
+                state.searchActive = true
+                state.ignoreNextChar = true
+                refreshPanel(ctx)
+                return true
+            end
             if code == keys.c then transfer(ctx, "craft", 1) return true end
             if code == keys.q then transfer(ctx, "withdraw", 64) return true end
             if code == keys.enter or code == keys.numPadEnter then
@@ -534,6 +675,10 @@ function app.update(ctx, now)
         state.drawAt = nil
         drawPanel(ctx)
     end
+    if state.panelOpen and state.searchAt and now >= state.searchAt then
+        state.searchAt = nil
+        refresh(ctx, state.query)
+    end
     for id, pending in pairs(state.pending) do
         if now - pending.started > 50000 then
             state.pending[id] = nil
@@ -556,6 +701,8 @@ function app.stop(ctx)
     if ctx.system.getInputMode() == "storage" then ctx.system.setInputMode(nil) end
     ctx.ui.clear()
     state.panelOpen = false
+    state.searchActive = false
+    state.searchAt = nil
     state.drawAt = nil
     state.widgets = nil
 end

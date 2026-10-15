@@ -52,10 +52,13 @@ until their window closes.
 The Create Storage panel is a paged grid rendered with Advanced Peripherals'
 native `Item` overlay objects. Icons come directly from Minecraft, including
 modded items and active resource packs, so no texture download is needed. Move
-the mouse or use the wheel to select an item. Left click takes one, right click
-takes a stack, middle click deposits the held item, and `C` requests one crafted
-item when optional Create crafting is enabled. Closing the Keyboard module
-closes the panel.
+the mouse to select an item; the wheel changes whole pages, and the scrollbar
+can also be clicked. Click the search field or press `F` to type a registry-name
+filter. `Backspace` edits it, `Delete` clears it, and `Enter` applies it
+immediately (otherwise it applies after a short delay). Left click takes one,
+right click takes a stack, middle click deposits the held item, and `C` requests
+one crafted item when optional Create crafting is enabled. Closing the Keyboard
+module closes the panel.
 
 ## Create storage bridge
 
