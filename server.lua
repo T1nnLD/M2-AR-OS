@@ -151,12 +151,18 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "Create Stock Ticker not found")
             return
         end
-        local ok, raw = pcall(state.ticker.stock, true)
+        -- `stock(true)` asks Create/CC:Tweaked for the complete details of every
+        -- stack (components, enchantments and other NBT). A large logistics
+        -- network can turn that into a huge allocation on the Minecraft server
+        -- thread. The HUD only needs the basic name/count fields, so always use
+        -- the lightweight mode and cap the rednet response as a second guard.
+        local ok, raw = pcall(state.ticker.stock, false)
         if not ok then
             response(config, sender, message.id, false, nil, raw)
         else
+            local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
             response(config, sender, message.id, true, {
-                items = normalizeStock(raw, payload.query, tonumber(payload.limit) or 256)
+                items = normalizeStock(raw, payload.query, limit)
             })
         end
     elseif operation == "deposit" then
