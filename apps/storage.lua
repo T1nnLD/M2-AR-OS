@@ -10,9 +10,12 @@ local app = {
     persistent = false
 }
 
+local MIN_BRIDGE_VERSION = 2
+
 local state = {
     modemName = nil,
     serverId = nil,
+    serverVersion = nil,
     pending = {},
     sequence = 0,
     panelOpen = false,
@@ -21,6 +24,11 @@ local state = {
     selected = 1,
     offset = 1
 }
+
+local function bridgeReady()
+    return state.serverId ~= nil
+        and (tonumber(state.serverVersion) or 0) >= MIN_BRIDGE_VERSION
+end
 
 local function openModem(ctx)
     if state.modemName and rednet.isOpen(state.modemName) then return true end
@@ -39,6 +47,16 @@ local function send(ctx, operation, payload, callback)
         if callback then callback(false, nil, state.status) end
         return nil
     end
+    -- Never broadcast operational requests. An old v1 bridge performs a very
+    -- expensive full-NBT Stock Ticker query which can take down a large
+    -- multiplayer server. Discovery is harmless; all other operations require
+    -- the bridge to explicitly advertise the safe protocol version first.
+    if not bridgeReady() then
+        local reason = state.serverId and "storage bridge update required"
+            or "storage bridge not discovered"
+        if callback then callback(false, nil, reason) end
+        return nil
+    end
     state.sequence = state.sequence + 1
     local id = ("%d:%d:%d"):format(os.getComputerID(), util.epoch(), state.sequence)
     local message = {
@@ -49,11 +67,7 @@ local function send(ctx, operation, payload, callback)
         payload = payload or {}
     }
     state.pending[id] = { callback = callback, started = util.epoch() }
-    if state.serverId then
-        rednet.send(state.serverId, message, ctx.config.storage.protocol)
-    else
-        rednet.broadcast(message, ctx.config.storage.protocol)
-    end
+    rednet.send(state.serverId, message, ctx.config.storage.protocol)
     return id
 end
 
@@ -88,9 +102,9 @@ local function drawPanel(ctx)
     ctx.ui.textureRect(x, y, panelW, panelH, theme.background, 0.90, 70)
     ctx.ui.rectangle(x, y, panelW, 2, theme.purple, 1, 72)
     ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, theme.blue, 1, 72)
-    ctx.ui.text(x + 9, y + 7, "CREATE LOGISTICS", theme.white, 1.05, 75)
+    ctx.ui.text(x + 9, y + 7, "DIRECT STORAGE", theme.white, 1.05, 75)
     ctx.ui.text(x + panelW - 87, y + 8, state.status,
-        state.serverId and theme.green or theme.amber, 0.75, 75)
+        bridgeReady() and theme.green or theme.amber, 0.75, 75)
 
     local maxRows = math.min(ctx.config.storage.maxRows, math.floor((panelH - 50) / 14))
     if #state.rows == 0 then
@@ -118,7 +132,18 @@ local function drawPanel(ctx)
 end
 
 local function refresh(ctx, query)
-    state.status = state.serverId and "SYNC" or "SEARCHING"
+    if not state.serverId then
+        state.status = "SEARCHING"
+        drawPanel(ctx)
+        discover(ctx)
+        return
+    end
+    if not bridgeReady() then
+        state.status = "UPDATE BRIDGE"
+        drawPanel(ctx)
+        return
+    end
+    state.status = "SYNC"
     drawPanel(ctx)
     send(ctx, "stock", { query = query or "", limit = 128 }, function(ok, data, err)
         if ok then
@@ -143,11 +168,15 @@ end
 
 function app.start(ctx)
     state.serverId = ctx.config.storage.serverId
+    state.serverVersion = nil
     state.pending = {}
     ctx.services.provide("storage", {
         discover = function() return discover(ctx) end,
         status = function()
-            return { online = state.serverId ~= nil, serverId = state.serverId, status = state.status }
+            return {
+                online = bridgeReady(), serverId = state.serverId,
+                version = state.serverVersion, status = state.status
+            }
         end,
         request = function(operation, payload, callback) return send(ctx, operation, payload, callback) end,
         stock = function(query, callback) return send(ctx, "stock", { query = query or "" }, callback) end,
@@ -254,8 +283,10 @@ function app.onEvent(ctx, event, sender, message, protocol)
             or type(message) ~= "table" then return end
     if message.kind == "hello" and message.key == ctx.config.storage.sharedKey then
         state.serverId = sender
-        state.status = "ONLINE"
-        if state.panelOpen then refresh(ctx) end
+        state.serverVersion = tonumber(message.version) or 0
+        state.status = bridgeReady() and "ONLINE" or "UPDATE BRIDGE"
+        if state.panelOpen and bridgeReady() then refresh(ctx)
+        elseif state.panelOpen then drawPanel(ctx) end
         return
     end
     if message.kind ~= "response" or not message.id then return end

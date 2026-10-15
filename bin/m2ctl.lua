@@ -1,6 +1,7 @@
 local util = require("m2os.lib.util")
 local config = require("m2os.config").storage
 local args = { ... }
+local MIN_BRIDGE_VERSION = 2
 
 local function usage()
     print("M2OS Create storage client")
@@ -25,29 +26,35 @@ if not modemName then error("Wireless/Ender Modem not found", 0) end
 local wasOpen = rednet.isOpen(modemName)
 if not wasOpen then rednet.open(modemName) end
 
-local serverId = config.serverId
-if not serverId then
-    rednet.broadcast({ kind = "discover", key = config.sharedKey }, config.protocol)
-    local deadline = os.epoch("utc") + 3000
-    while os.epoch("utc") < deadline do
-        local sender, message = rednet.receive(config.protocol, 0.5)
-        if sender and type(message) == "table" and message.kind == "hello"
-                and message.key == config.sharedKey then
-            serverId = sender
-            break
-        end
+-- Always perform a version handshake, even when a server ID is configured.
+-- Sending `stock` to the old bridge can trigger its unbounded full-NBT query.
+local serverId, serverVersion
+rednet.broadcast({ kind = "discover", key = config.sharedKey }, config.protocol)
+local deadline = os.epoch("utc") + 3000
+while os.epoch("utc") < deadline do
+    local sender, message = rednet.receive(config.protocol, 0.5)
+    if sender and type(message) == "table" and message.kind == "hello"
+            and message.key == config.sharedKey
+            and (not config.serverId or sender == config.serverId) then
+        serverId = sender
+        serverVersion = tonumber(message.version) or 0
+        break
     end
 end
 if not serverId then
     if not wasOpen then rednet.close(modemName) end
     error("M2OS storage server not found", 0)
 end
+if serverVersion < MIN_BRIDGE_VERSION then
+    if not wasOpen then rednet.close(modemName) end
+    error("storage bridge update required (need v2)", 0)
+end
 
 local operation, payload
 if command == "ping" then
     operation, payload = "ping", {}
 elseif command == "stock" or command == "find" then
-    operation, payload = "stock", { query = args[2] or "", limit = 256 }
+    operation, payload = "stock", { query = args[2] or "", limit = 128 }
 elseif command == "take" or command == "withdraw" then
     operation, payload = "withdraw", { name = args[2], count = tonumber(args[3]) or 1 }
 elseif command == "put" or command == "deposit" then

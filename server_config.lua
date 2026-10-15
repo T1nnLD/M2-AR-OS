@@ -4,13 +4,23 @@ return {
     protocol = "m2os.storage.v1",
     sharedKey = "m2os", -- change this on both the client and server
 
+    -- Every wired peripheral with list() and size() is treated as storage.
+    -- Add machine buffers or private inventories here to ignore them.
+    inventoryBlacklist = {
+        -- "minecraft:furnace_0"
+    },
+
+    -- Direct inventory transfers are the default and do not use Create
+    -- packages. Crafting through the Stock Ticker remains opt-in because it
+    -- requires a complete, stable package route.
+    enableCreateCrafting = false,
+
+    -- The settings below are only used when enableCreateCrafting is true.
     -- Address printed on the Packager connected to the player's output chest.
     outputAddress = "M2OS_OUT",
 
-    -- Inventories adjacent/networked to the Inventory Manager computer.
-    -- Packages requested from the Stock Ticker must be unpacked into outputInventory.
+    -- Packages requested from the Stock Ticker must be unpacked here.
     outputInventory = "minecraft:chest_0",
-    inputInventory = "minecraft:chest_1",
 
     transactionTimeout = 45,
     trustedIds = {}, -- empty means every computer with the shared key

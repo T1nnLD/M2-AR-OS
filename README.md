@@ -51,23 +51,35 @@ until their window closes.
 
 Inside the Create Storage panel, use the wheel to select an item. Left click
 takes one, right click takes a stack, middle click deposits the held item, and
-`C` requests one crafted item. Closing the Keyboard module closes the panel.
+`C` requests one crafted item when optional Create crafting is enabled. Closing
+the Keyboard module closes the panel.
 
 ## Create storage bridge
 
-Use a second CC computer at the Create logistics network. It needs:
+Use a second CC computer at the warehouse. It needs:
 
 1. a Wireless/Ender Modem;
-2. a wired connection to a Create Stock Ticker;
+2. a wired modem network connected to the storage inventories;
 3. an Advanced Peripherals Inventory Manager with a Memory Card bound to the
    same player (required for transfer directly to/from the player);
-4. an input inventory which feeds a Packager/Stock Link;
-5. an output address and inventory where requested packages are unpacked.
+4. wired modems on the chests, barrels, Item Vaults or other inventories that
+   should be included.
 
 Copy the `m2os` directory and `m2os_server.lua` to that computer, then edit
-`m2os/server_config.lua`. The inventory names shown by `peripherals` must match
-`inputInventory` and `outputInventory`. `outputAddress` must match the package
-address configured on the Create network.
+`m2os/server_config.lua`. The bridge automatically discovers every accessible
+peripheral which exposes both `list()` and `size()`. The Inventory Manager is
+excluded automatically. Add unrelated machine buffers to `inventoryBlacklist`:
+
+```lua
+inventoryBlacklist = {
+    "minecraft:furnace_0",
+    "create:depot_0"
+}
+```
+
+Stock listing, withdrawal and deposit operate directly on these wired
+inventories. They do not use the Stock Ticker, Packagers, package addresses or
+an intermediate output chest.
 
 Start it with:
 
@@ -84,10 +96,10 @@ m2ctl put minecraft:cobblestone 64
 m2ctl craft minecraft:precision_mechanism 4
 ```
 
-`craft` submits an order to Create just like the Stock Ticker. The Create
-Factory Panel/Gauge recipes and package routes still have to be built in the
-world. If an Inventory Manager or output buffer is omitted, the order is sent
-but remains in the configured output inventory for manual pickup.
+`craft` is disabled by default. It can be enabled with
+`enableCreateCrafting = true`, but still requires a Stock Ticker, a complete
+Create package route, `outputAddress` and `outputInventory`. Ordinary `stock`,
+`take` and `put` commands remain direct regardless of this option.
 
 ## Context details
 

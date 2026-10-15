@@ -49,6 +49,69 @@ local function locateManager()
         { "inventoryManager", "inventory_manager" })
 end
 
+local function isExcluded(config, name)
+    for _, excluded in ipairs(config.inventoryBlacklist or {}) do
+        if excluded == name then return true end
+    end
+    return false
+end
+
+local function locateInventories(config)
+    local inventories = {}
+    for _, name in ipairs(peripheral.getNames()) do
+        if not isExcluded(config, name) then
+            local wrapped = peripheral.wrap(name)
+            -- Requiring both methods avoids accidentally treating the Stock
+            -- Ticker, a modem or another machine as warehouse storage.
+            if wrapped and type(wrapped.list) == "function"
+                    and type(wrapped.size) == "function"
+                    and not (type(wrapped.importItem) == "function"
+                        and type(wrapped.exportItem) == "function") then
+                inventories[#inventories + 1] = { name = name, peripheral = wrapped }
+            end
+        end
+    end
+    table.sort(inventories, function(a, b) return a.name < b.name end)
+    return inventories
+end
+
+local function scanInventories(state)
+    local merged = {}
+    for _, inventory in ipairs(state.inventories) do
+        local ok, slots = pcall(inventory.peripheral.list)
+        if ok and type(slots) == "table" then
+            for _, stack in pairs(slots) do
+                if type(stack) == "table" and stack.name then
+                    local item = merged[stack.name]
+                    if not item then
+                        item = {
+                            name = stack.name,
+                            displayName = stack.displayName or stack.label,
+                            count = 0
+                        }
+                        merged[stack.name] = item
+                    end
+                    item.count = item.count + (tonumber(stack.count) or 0)
+                end
+            end
+        end
+    end
+    return merged
+end
+
+local function movedAmount(value)
+    if type(value) == "table" then
+        return tonumber(value.moved or value.count or value.transferred) or 0
+    end
+    return tonumber(value) or 0
+end
+
+local function refreshPeripherals(state)
+    state.ticker = locateTicker()
+    state.manager = locateManager()
+    state.inventories = locateInventories(state.config)
+end
+
 local function response(config, recipient, id, ok, data, err)
     rednet.send(recipient, {
         kind = "response", id = id, ok = ok, data = data,
@@ -117,12 +180,13 @@ end
 local function printStatus(state)
     term.clear()
     term.setCursorPos(1, 1)
-    print("M2OS CREATE BRIDGE")
+    print("M2OS STORAGE BRIDGE")
     print("Computer: " .. os.getComputerID())
     print("Modem:   " .. (state.modemName or "NOT FOUND"))
-    print("Ticker:  " .. (state.ticker and "ONLINE" or "NOT FOUND"))
+    print("Ticker:  " .. (state.ticker and "ONLINE"
+        or (state.config.enableCreateCrafting and "NOT FOUND" or "OPTIONAL")))
     print("Manager: " .. (state.manager and "ONLINE" or "NOT FOUND"))
-    print("Address: " .. tostring(state.config.outputAddress))
+    print("Storage: " .. tostring(#state.inventories) .. " inventories")
     print("Pending: " .. tostring(#state.transactions))
     print("")
     print(state.lastMessage or "Waiting for requests...")
@@ -144,34 +208,28 @@ local function handleRequest(state, sender, message)
     if operation == "ping" then
         response(config, sender, message.id, true, {
             ticker = state.ticker ~= nil, manager = state.manager ~= nil,
-            outputAddress = config.outputAddress
+            inventories = #state.inventories, direct = true,
+            createCrafting = config.enableCreateCrafting == true
         })
     elseif operation == "stock" then
-        if not state.ticker then
-            response(config, sender, message.id, false, nil, "Create Stock Ticker not found")
+        state.inventories = locateInventories(config)
+        if #state.inventories == 0 then
+            response(config, sender, message.id, false, nil, "no wired inventories found")
             return
         end
-        -- `stock(true)` asks Create/CC:Tweaked for the complete details of every
-        -- stack (components, enchantments and other NBT). A large logistics
-        -- network can turn that into a huge allocation on the Minecraft server
-        -- thread. The HUD only needs the basic name/count fields, so always use
-        -- the lightweight mode and cap the rednet response as a second guard.
-        local ok, raw = pcall(state.ticker.stock, false)
-        if not ok then
-            response(config, sender, message.id, false, nil, raw)
-        else
-            local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
-            response(config, sender, message.id, true, {
-                items = normalizeStock(raw, payload.query, limit)
-            })
-        end
+        local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
+        response(config, sender, message.id, true, {
+            items = normalizeStock(scanInventories(state), payload.query, limit),
+            inventories = #state.inventories
+        })
     elseif operation == "deposit" then
         if not state.manager then
             response(config, sender, message.id, false, nil, "Inventory Manager not found")
             return
         end
-        if not config.inputInventory or config.inputInventory == "" then
-            response(config, sender, message.id, false, nil, "inputInventory is not configured")
+        state.inventories = locateInventories(config)
+        if #state.inventories == 0 then
+            response(config, sender, message.id, false, nil, "no wired inventories found")
             return
         end
         local count = math.max(1, math.floor(tonumber(payload.count) or 1))
@@ -184,14 +242,62 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "hand is empty or item name is missing")
             return
         end
-        local filter = { name = itemName, count = count }
-        local ok, moved, moveError = pcall(state.manager.exportItem, config.inputInventory, filter)
-        if ok and moved ~= nil then
-            response(config, sender, message.id, true, { moved = tonumber(moved) or 0 })
-        else
-            response(config, sender, message.id, false, nil, moveError or moved)
+        local moved, lastError = 0, nil
+        for _, inventory in ipairs(state.inventories) do
+            if moved >= count then break end
+            local ok, value = pcall(state.manager.exportItem, inventory.name, {
+                name = itemName, count = count - moved
+            })
+            if ok then moved = moved + movedAmount(value)
+            else lastError = value end
         end
-    elseif operation == "withdraw" or operation == "craft" then
+        if moved > 0 then
+            response(config, sender, message.id, true, {
+                requested = count, moved = moved, remaining = math.max(0, count - moved)
+            })
+        else
+            response(config, sender, message.id, false, nil,
+                lastError or "no storage accepted the item")
+        end
+    elseif operation == "withdraw" then
+        if not state.manager then
+            response(config, sender, message.id, false, nil, "Inventory Manager not found")
+            return
+        end
+        if not payload.name then
+            response(config, sender, message.id, false, nil, "item name is required")
+            return
+        end
+        state.inventories = locateInventories(config)
+        if #state.inventories == 0 then
+            response(config, sender, message.id, false, nil, "no wired inventories found")
+            return
+        end
+        local count = math.max(1, math.floor(tonumber(payload.count) or 1))
+        local moved, lastError = 0, nil
+        for _, inventory in ipairs(state.inventories) do
+            if moved >= count then break end
+            local ok, value = pcall(state.manager.importItem, inventory.name, {
+                name = payload.name, count = count - moved
+            })
+            if ok then moved = moved + movedAmount(value)
+            else lastError = value end
+        end
+        if moved > 0 then
+            response(config, sender, message.id, true, {
+                requested = count, moved = moved, remaining = math.max(0, count - moved),
+                mode = "direct"
+            })
+        else
+            response(config, sender, message.id, false, nil,
+                lastError or "item not found or player inventory is full")
+        end
+    elseif operation == "craft" then
+        if config.enableCreateCrafting ~= true then
+            response(config, sender, message.id, false, nil,
+                "Create crafting is disabled in direct storage mode")
+            return
+        end
         if not state.ticker then
             response(config, sender, message.id, false, nil, "Create Stock Ticker not found")
             return
@@ -262,12 +368,11 @@ function Server.run(config)
     if not modemName then error("Wireless/Ender Modem not found", 0) end
     if not rednet.isOpen(modemName) then rednet.open(modemName) end
 
-    local ticker = locateTicker()
-    local manager = locateManager()
     local state = {
-        config = config, modemName = modemName, ticker = ticker, manager = manager,
-        transactions = {}, lastMessage = nil
+        config = config, modemName = modemName, ticker = nil, manager = nil,
+        inventories = {}, transactions = {}, lastMessage = nil
     }
+    refreshPeripherals(state)
     printStatus(state)
     local timer = os.startTimer(0.25)
 
@@ -280,7 +385,7 @@ function Server.run(config)
             if message.kind == "discover" and message.key == config.sharedKey then
                 rednet.send(sender, {
                     kind = "hello", key = config.sharedKey,
-                    name = "M2OS Create Bridge", version = 1
+                    name = "M2OS Create Bridge", version = 2
                 }, config.protocol)
             elseif message.kind == "request" and message.id then
                 handleRequest(state, sender, message)
@@ -291,8 +396,7 @@ function Server.run(config)
             printStatus(state)
             timer = os.startTimer(0.25)
         elseif event[1] == "peripheral" or event[1] == "peripheral_detach" then
-            state.ticker = locateTicker()
-            state.manager = locateManager()
+            refreshPeripherals(state)
             printStatus(state)
         end
     end
