@@ -28,7 +28,7 @@ if not wasOpen then rednet.open(modemName) end
 
 -- Always perform a version handshake, even when a server ID is configured.
 -- Sending `stock` to the old bridge can trigger its unbounded full-NBT query.
-local serverId, serverVersion
+local serverId, legacyServerId
 rednet.broadcast({ kind = "discover", key = config.sharedKey }, config.protocol)
 local deadline = os.epoch("utc") + 3000
 while os.epoch("utc") < deadline do
@@ -36,18 +36,21 @@ while os.epoch("utc") < deadline do
     if sender and type(message) == "table" and message.kind == "hello"
             and message.key == config.sharedKey
             and (not config.serverId or sender == config.serverId) then
-        serverId = sender
-        serverVersion = tonumber(message.version) or 0
-        break
+        local version = tonumber(message.version) or 0
+        if version >= MIN_BRIDGE_VERSION then
+            serverId = sender
+            break
+        end
+        legacyServerId = sender
     end
 end
 if not serverId then
     if not wasOpen then rednet.close(modemName) end
+    if legacyServerId then
+        error("only old storage bridge #" .. legacyServerId
+            .. " found; update and restart it", 0)
+    end
     error("M2OS storage server not found", 0)
-end
-if serverVersion < MIN_BRIDGE_VERSION then
-    if not wasOpen then rednet.close(modemName) end
-    error("storage bridge update required (need v2)", 0)
 end
 
 local operation, payload

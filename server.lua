@@ -83,8 +83,30 @@ local function isItemVault(name, types)
     return false
 end
 
+local function vaultSnapshot(inventory)
+    local okSize, size = pcall(inventory.size)
+    local okList, slots = pcall(inventory.list)
+    if not okSize or not okList or type(slots) ~= "table" then return nil end
+    local parts = { tostring(size) }
+    local indexes = {}
+    for slot in pairs(slots) do indexes[#indexes + 1] = slot end
+    table.sort(indexes, function(a, b) return tonumber(a) < tonumber(b) end)
+    for _, slot in ipairs(indexes) do
+        local stack = slots[slot]
+        if type(stack) == "table" then
+            parts[#parts + 1] = table.concat({
+                tostring(slot), tostring(stack.name or ""),
+                tostring(stack.count or 0), tostring(stack.nbt or "")
+            }, ":")
+        end
+    end
+    return table.concat(parts, "|")
+end
+
 local function locateInventories(config)
     local inventories = {}
+    local vaultSnapshots = {}
+    local duplicateEndpoints = 0
     for _, name in ipairs(peripheral.getNames()) do
         if not isExcluded(config, name) then
             local wrapped = peripheral.wrap(name)
@@ -95,16 +117,27 @@ local function locateInventories(config)
                     and type(wrapped.size) == "function"
                     and not (type(wrapped.importItem) == "function"
                         and type(wrapped.exportItem) == "function") then
-                inventories[#inventories + 1] = {
+                local kind = isItemVault(name, types) and "item_vault" or "inventory"
+                local duplicate = false
+                if kind == "item_vault" and config.deduplicateItemVaults ~= false then
+                    local snapshot = vaultSnapshot(wrapped)
+                    if snapshot and vaultSnapshots[snapshot] then
+                        duplicate = true
+                        duplicateEndpoints = duplicateEndpoints + 1
+                    elseif snapshot then
+                        vaultSnapshots[snapshot] = name
+                    end
+                end
+                if not duplicate then inventories[#inventories + 1] = {
                     name = name,
                     peripheral = wrapped,
-                    kind = isItemVault(name, types) and "item_vault" or "inventory"
-                }
+                    kind = kind
+                } end
             end
         end
     end
     table.sort(inventories, function(a, b) return a.name < b.name end)
-    return inventories
+    return inventories, duplicateEndpoints
 end
 
 local function scanInventories(state)
@@ -141,7 +174,7 @@ end
 local function refreshPeripherals(state)
     state.ticker = locateTicker()
     state.manager = locateManager()
-    state.inventories = locateInventories(state.config)
+    state.inventories, state.duplicateEndpoints = locateInventories(state.config)
 end
 
 local function countInventoryKind(inventories, kind)
@@ -228,6 +261,10 @@ local function printStatus(state)
     print("Manager: " .. (state.manager and "ONLINE" or "NOT FOUND"))
     print(("Storage: %d inventories (%d vaults)"):format(
         #state.inventories, countInventoryKind(state.inventories, "item_vault")))
+    if (state.duplicateEndpoints or 0) > 0 then
+        print(("Aliases: %d duplicate vault endpoint(s) ignored"):format(
+            state.duplicateEndpoints))
+    end
     print("Pending: " .. tostring(#state.transactions))
     print("")
     print(state.lastMessage or "Waiting for requests...")
@@ -254,7 +291,7 @@ local function handleRequest(state, sender, message)
             createCrafting = config.enableCreateCrafting == true
         })
     elseif operation == "stock" then
-        state.inventories = locateInventories(config)
+        state.inventories, state.duplicateEndpoints = locateInventories(config)
         if #state.inventories == 0 then
             response(config, sender, message.id, false, nil, "no wired inventories found")
             return
@@ -270,7 +307,7 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "Inventory Manager not found")
             return
         end
-        state.inventories = locateInventories(config)
+        state.inventories, state.duplicateEndpoints = locateInventories(config)
         if #state.inventories == 0 then
             response(config, sender, message.id, false, nil, "no wired inventories found")
             return
@@ -311,7 +348,7 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "item name is required")
             return
         end
-        state.inventories = locateInventories(config)
+        state.inventories, state.duplicateEndpoints = locateInventories(config)
         if #state.inventories == 0 then
             response(config, sender, message.id, false, nil, "no wired inventories found")
             return
@@ -413,7 +450,7 @@ function Server.run(config)
 
     local state = {
         config = config, modemName = modemName, ticker = nil, manager = nil,
-        inventories = {}, transactions = {}, lastMessage = nil
+        inventories = {}, duplicateEndpoints = 0, transactions = {}, lastMessage = nil
     }
     refreshPeripherals(state)
     printStatus(state)
@@ -426,9 +463,12 @@ function Server.run(config)
                 and type(event[3]) == "table" then
             local sender, message = event[2], event[3]
             if message.kind == "discover" and message.key == config.sharedKey then
+                state.lastMessage = ("#%d discover"):format(sender)
                 rednet.send(sender, {
                     kind = "hello", key = config.sharedKey,
-                    name = "M2OS Create Bridge", version = 2
+                    name = "M2OS Create Bridge", version = 3,
+                    inventories = #state.inventories,
+                    itemVaults = countInventoryKind(state.inventories, "item_vault")
                 }, config.protocol)
             elseif message.kind == "request" and message.id then
                 handleRequest(state, sender, message)

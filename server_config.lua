@@ -10,6 +10,12 @@ return {
         -- "minecraft:furnace_0"
     },
 
+    -- A multiblock Item Vault can appear once for every wired modem attached
+    -- to it. Identical vault endpoints are treated as one storage so stock is
+    -- not counted twice. Set false only if separate, identical vaults really
+    -- are connected to the same bridge.
+    deduplicateItemVaults = true,
+
     -- Direct inventory transfers are the default and do not use Create
     -- packages. Crafting through the Stock Ticker remains opt-in because it
     -- requires a complete, stable package route.

@@ -21,6 +21,8 @@ local state = {
     panelOpen = false,
     rows = {},
     status = "OFFLINE",
+    statusDetail = nil,
+    legacyServerId = nil,
     selected = 1,
     offset = 1
 }
@@ -78,6 +80,7 @@ local function discover(ctx)
         key = ctx.config.storage.sharedKey
     }, ctx.config.storage.protocol)
     state.status = "SEARCHING"
+    state.statusDetail = "Looking for a compatible storage bridge..."
     return true
 end
 
@@ -108,7 +111,10 @@ local function drawPanel(ctx)
 
     local maxRows = math.min(ctx.config.storage.maxRows, math.floor((panelH - 50) / 14))
     if #state.rows == 0 then
-        ctx.ui.text(x + 10, y + 35, "No stock data", theme.gray, 0.9, 75)
+        local emptyText = state.statusDetail
+            or (bridgeReady() and "Storage is empty" or "No bridge connection")
+        ctx.ui.text(x + 10, y + 35, util.short(emptyText, 46),
+            state.status == "UPDATE BRIDGE" and theme.amber or theme.gray, 0.78, 75)
     else
         local last = math.min(#state.rows, state.offset + maxRows - 1)
         for index = state.offset, last do
@@ -140,10 +146,12 @@ local function refresh(ctx, query)
     end
     if not bridgeReady() then
         state.status = "UPDATE BRIDGE"
+        state.statusDetail = "Old bridge found; update and restart it"
         drawPanel(ctx)
         return
     end
     state.status = "SYNC"
+    state.statusDetail = "Reading connected inventories..."
     drawPanel(ctx)
     send(ctx, "stock", { query = query or "", limit = 128 }, function(ok, data, err)
         if ok then
@@ -151,8 +159,10 @@ local function refresh(ctx, query)
             state.selected = math.max(1, math.min(state.selected, #state.rows))
             state.offset = math.max(1, math.min(state.offset, state.selected))
             state.status = "ONLINE"
+            state.statusDetail = #state.rows == 0 and "Storage is empty" or nil
         else
             state.status = "ERROR"
+            state.statusDetail = tostring(err)
             ctx.notify("Storage: " .. tostring(err), ctx.config.theme.red)
         end
         drawPanel(ctx)
@@ -169,6 +179,7 @@ end
 function app.start(ctx)
     state.serverId = ctx.config.storage.serverId
     state.serverVersion = nil
+    state.legacyServerId = nil
     state.pending = {}
     ctx.services.provide("storage", {
         discover = function() return discover(ctx) end,
@@ -282,11 +293,26 @@ function app.onEvent(ctx, event, sender, message, protocol)
     if event ~= "rednet_message" or protocol ~= ctx.config.storage.protocol
             or type(message) ~= "table" then return end
     if message.kind == "hello" and message.key == ctx.config.storage.sharedKey then
-        state.serverId = sender
-        state.serverVersion = tonumber(message.version) or 0
-        state.status = bridgeReady() and "ONLINE" or "UPDATE BRIDGE"
-        if state.panelOpen and bridgeReady() then refresh(ctx)
-        elseif state.panelOpen then drawPanel(ctx) end
+        if ctx.config.storage.serverId and sender ~= ctx.config.storage.serverId then return end
+        local version = tonumber(message.version) or 0
+        if version >= MIN_BRIDGE_VERSION then
+            -- A late reply from an obsolete bridge must never replace a
+            -- compatible one. This matters on servers where an old bridge
+            -- computer was left running somewhere in loaded chunks.
+            state.serverId = sender
+            state.serverVersion = version
+            state.status = "ONLINE"
+            state.statusDetail = nil
+            if state.panelOpen then refresh(ctx) end
+        elseif not bridgeReady() then
+            state.legacyServerId = sender
+            state.serverId = nil
+            state.serverVersion = nil
+            state.status = "UPDATE BRIDGE"
+            state.statusDetail = "Old bridge #" .. tostring(sender)
+                .. " found; update and restart it"
+            if state.panelOpen then drawPanel(ctx) end
+        end
         return
     end
     if message.kind ~= "response" or not message.id then return end
