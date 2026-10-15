@@ -56,18 +56,50 @@ local function isExcluded(config, name)
     return false
 end
 
+local function peripheralTypes(name)
+    local types = {}
+    if type(peripheral.getType) ~= "function" then return types end
+    local values = { peripheral.getType(name) }
+    for _, value in ipairs(values) do
+        if type(value) == "string" then
+            types[value:lower()] = true
+        elseif type(value) == "table" then
+            for _, child in pairs(value) do
+                if type(child) == "string" then types[child:lower()] = true end
+            end
+        end
+    end
+    return types
+end
+
+local function isItemVault(name, types)
+    local lowerName = tostring(name):lower()
+    if lowerName:find("item_vault", 1, true)
+            or lowerName:find("itemvault", 1, true) then return true end
+    for kind in pairs(types) do
+        if kind:find("item_vault", 1, true)
+                or kind:find("itemvault", 1, true) then return true end
+    end
+    return false
+end
+
 local function locateInventories(config)
     local inventories = {}
     for _, name in ipairs(peripheral.getNames()) do
         if not isExcluded(config, name) then
             local wrapped = peripheral.wrap(name)
+            local types = peripheralTypes(name)
             -- Requiring both methods avoids accidentally treating the Stock
             -- Ticker, a modem or another machine as warehouse storage.
             if wrapped and type(wrapped.list) == "function"
                     and type(wrapped.size) == "function"
                     and not (type(wrapped.importItem) == "function"
                         and type(wrapped.exportItem) == "function") then
-                inventories[#inventories + 1] = { name = name, peripheral = wrapped }
+                inventories[#inventories + 1] = {
+                    name = name,
+                    peripheral = wrapped,
+                    kind = isItemVault(name, types) and "item_vault" or "inventory"
+                }
             end
         end
     end
@@ -110,6 +142,14 @@ local function refreshPeripherals(state)
     state.ticker = locateTicker()
     state.manager = locateManager()
     state.inventories = locateInventories(state.config)
+end
+
+local function countInventoryKind(inventories, kind)
+    local count = 0
+    for _, inventory in ipairs(inventories) do
+        if inventory.kind == kind then count = count + 1 end
+    end
+    return count
 end
 
 local function response(config, recipient, id, ok, data, err)
@@ -186,7 +226,8 @@ local function printStatus(state)
     print("Ticker:  " .. (state.ticker and "ONLINE"
         or (state.config.enableCreateCrafting and "NOT FOUND" or "OPTIONAL")))
     print("Manager: " .. (state.manager and "ONLINE" or "NOT FOUND"))
-    print("Storage: " .. tostring(#state.inventories) .. " inventories")
+    print(("Storage: %d inventories (%d vaults)"):format(
+        #state.inventories, countInventoryKind(state.inventories, "item_vault")))
     print("Pending: " .. tostring(#state.transactions))
     print("")
     print(state.lastMessage or "Waiting for requests...")
@@ -209,6 +250,7 @@ local function handleRequest(state, sender, message)
         response(config, sender, message.id, true, {
             ticker = state.ticker ~= nil, manager = state.manager ~= nil,
             inventories = #state.inventories, direct = true,
+            itemVaults = countInventoryKind(state.inventories, "item_vault"),
             createCrafting = config.enableCreateCrafting == true
         })
     elseif operation == "stock" then
@@ -220,7 +262,8 @@ local function handleRequest(state, sender, message)
         local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
         response(config, sender, message.id, true, {
             items = normalizeStock(scanInventories(state), payload.query, limit),
-            inventories = #state.inventories
+            inventories = #state.inventories,
+            itemVaults = countInventoryKind(state.inventories, "item_vault")
         })
     elseif operation == "deposit" then
         if not state.manager then

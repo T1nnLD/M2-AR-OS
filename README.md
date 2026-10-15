@@ -81,6 +81,14 @@ Stock listing, withdrawal and deposit operate directly on these wired
 inventories. They do not use the Stock Ticker, Packagers, package addresses or
 an intermediate output chest.
 
+Create Item Vaults are detected explicitly. Attach and activate one wired modem
+on any block of each assembled Vault; Create forwards that connection to the
+multiblock controller and M2OS sees its combined inventory. Do not attach two
+modems to different blocks of the same Vault, because CC:Tweaked exposes both
+connections as separate peripheral names and the contents would be counted
+twice. The bridge screen reports the result as `Storage: N inventories (V
+vaults)`.
+
 Start it with:
 
 ```text
