@@ -11,6 +11,7 @@ local app = {
 }
 
 local MIN_BRIDGE_VERSION = 2
+local PANEL_SETTLE_MS = 180
 
 local state = {
     modemName = nil,
@@ -24,8 +25,15 @@ local state = {
     statusDetail = nil,
     legacyServerId = nil,
     selected = 1,
-    offset = 1
+    offset = 1,
+    drawAt = nil,
+    widgets = nil
 }
+
+local function objectCall(object, method, ...)
+    if not object or type(object[method]) ~= "function" then return false end
+    return pcall(object[method], ...)
+end
 
 local function bridgeReady()
     return state.serverId ~= nil
@@ -94,65 +102,98 @@ local function sortedStock(stock)
     return rows
 end
 
+local function updatePanel(ctx)
+    local widgets = state.widgets
+    if not widgets then return end
+    local theme = ctx.config.theme
+    local statusColor = bridgeReady() and theme.green or theme.amber
+    if state.status == "ERROR" then statusColor = theme.red end
+    objectCall(widgets.status, "setContent", state.status)
+    objectCall(widgets.status, "setColor", statusColor)
+
+    local hasRows = #state.rows > 0
+    local emptyText = state.statusDetail
+        or (bridgeReady() and "Storage is empty" or "No bridge connection")
+    objectCall(widgets.empty, "setContent", hasRows and "" or util.short(emptyText, 46))
+    objectCall(widgets.empty, "setColor",
+        state.status == "UPDATE BRIDGE" and theme.amber or theme.gray)
+
+    for visibleIndex, entry in ipairs(widgets.rows) do
+        local index = state.offset + visibleIndex - 1
+        local item = state.rows[index]
+        if item then
+            local opacity = index == state.selected and 0.20
+                or (index % 2 == 0 and 0.07 or 0)
+            objectCall(entry.background, "setColor",
+                index == state.selected and theme.purple or theme.blue)
+            objectCall(entry.background, "setOpacity", opacity)
+            objectCall(entry.label, "setContent", util.short(util.itemLabel(item), 28))
+            objectCall(entry.label, "setColor", theme.white)
+            objectCall(entry.count, "setContent", tostring(item.count or 0))
+            objectCall(entry.count, "setColor", item.craftable and theme.purple or theme.blue)
+        else
+            objectCall(entry.background, "setOpacity", 0)
+            objectCall(entry.label, "setContent", "")
+            objectCall(entry.count, "setContent", "")
+        end
+    end
+end
+
 local function drawPanel(ctx)
     ctx.ui.clear()
-    if not state.panelOpen then return end
+    state.widgets = nil
+    if not state.panelOpen or state.drawAt then return end
     local width, height = ctx.system.getSize()
     local theme = ctx.config.theme
     local panelW, panelH = math.min(270, width - 30), math.min(176, height - 30)
     local x, y = (width - panelW) / 2, (height - panelH) / 2
+    local widgets = { rows = {} }
+    state.widgets = widgets
 
     ctx.ui.textureRect(x, y, panelW, panelH, theme.background, 0.90, 70)
     ctx.ui.rectangle(x, y, panelW, 2, theme.purple, 1, 72)
     ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, theme.blue, 1, 72)
     ctx.ui.text(x + 9, y + 7, "DIRECT STORAGE", theme.white, 1.05, 75)
-    ctx.ui.text(x + panelW - 87, y + 8, state.status,
-        bridgeReady() and theme.green or theme.amber, 0.75, 75)
+    widgets.status = ctx.ui.text(x + panelW - 87, y + 8, state.status,
+        theme.gray, 0.75, 75)
 
     local maxRows = math.min(ctx.config.storage.maxRows, math.floor((panelH - 50) / 14))
-    if #state.rows == 0 then
-        local emptyText = state.statusDetail
-            or (bridgeReady() and "Storage is empty" or "No bridge connection")
-        ctx.ui.text(x + 10, y + 35, util.short(emptyText, 46),
-            state.status == "UPDATE BRIDGE" and theme.amber or theme.gray, 0.78, 75)
-    else
-        local last = math.min(#state.rows, state.offset + maxRows - 1)
-        for index = state.offset, last do
-            local item = state.rows[index]
-            local rowY = y + 27 + (index - state.offset) * 14
-            if index == state.selected then
-                ctx.ui.rectangle(x + 7, rowY - 2, panelW - 14, 13,
-                    theme.purple, 0.20, 72)
-            elseif index % 2 == 0 then
-                ctx.ui.rectangle(x + 7, rowY - 2, panelW - 14, 13,
-                    theme.blue, 0.07, 72)
-            end
-            ctx.ui.text(x + 10, rowY,
-                util.short(util.itemLabel(item), 28), theme.white, 0.82, 75)
-            ctx.ui.text(x + panelW - 54, rowY,
-                tostring(item.count or 0), item.craftable and theme.purple or theme.blue, 0.82, 75)
-        end
+    widgets.empty = ctx.ui.text(x + 10, y + 35, "", theme.gray, 0.78, 75)
+    for visibleIndex = 1, maxRows do
+        local rowY = y + 27 + (visibleIndex - 1) * 14
+        widgets.rows[visibleIndex] = {
+            background = ctx.ui.rectangle(x + 7, rowY - 2, panelW - 14, 13,
+                theme.blue, 0, 72),
+            label = ctx.ui.text(x + 10, rowY, "", theme.white, 0.82, 75),
+            count = ctx.ui.text(x + panelW - 54, rowY, "", theme.blue, 0.82, 75)
+        }
     end
     ctx.ui.text(x + 9, y + panelH - 18,
         "L:take  R:stack  M:put hand  C:craft", theme.gray, 0.67, 75)
+    updatePanel(ctx)
+end
+
+local function refreshPanel(ctx)
+    if state.widgets then updatePanel(ctx)
+    elseif state.panelOpen and not state.drawAt then drawPanel(ctx) end
 end
 
 local function refresh(ctx, query)
     if not state.serverId then
         state.status = "SEARCHING"
-        drawPanel(ctx)
+        refreshPanel(ctx)
         discover(ctx)
         return
     end
     if not bridgeReady() then
         state.status = "UPDATE BRIDGE"
         state.statusDetail = "Old bridge found; update and restart it"
-        drawPanel(ctx)
+        refreshPanel(ctx)
         return
     end
     state.status = "SYNC"
     state.statusDetail = "Reading connected inventories..."
-    drawPanel(ctx)
+    refreshPanel(ctx)
     send(ctx, "stock", { query = query or "", limit = 128 }, function(ok, data, err)
         if ok then
             state.rows = sortedStock(data and data.items)
@@ -165,15 +206,27 @@ local function refresh(ctx, query)
             state.statusDetail = tostring(err)
             ctx.notify("Storage: " .. tostring(err), ctx.config.theme.red)
         end
-        drawPanel(ctx)
+        refreshPanel(ctx)
     end)
 end
 
 local function togglePanel(ctx)
     state.panelOpen = not state.panelOpen
     ctx.system.setInputMode(state.panelOpen and "storage" or nil)
-    drawPanel(ctx)
-    if state.panelOpen then refresh(ctx) end
+    ctx.ui.clear()
+    state.widgets = nil
+    state.drawAt = nil
+    if state.panelOpen then
+        -- KeyboardScreen reports its final GUI size a few ticks after opening.
+        -- Delay the first build so the panel never flashes at the old origin.
+        state.drawAt = util.epoch()
+            + (ctx.system.getModule("keyboard") and PANEL_SETTLE_MS or 0)
+        if state.drawAt <= util.epoch() then
+            state.drawAt = nil
+            drawPanel(ctx)
+        end
+        refresh(ctx)
+    end
 end
 
 function app.start(ctx)
@@ -181,6 +234,8 @@ function app.start(ctx)
     state.serverVersion = nil
     state.legacyServerId = nil
     state.pending = {}
+    state.drawAt = nil
+    state.widgets = nil
     ctx.services.provide("storage", {
         discover = function() return discover(ctx) end,
         status = function()
@@ -225,7 +280,7 @@ local function transfer(ctx, operation, count)
     local item = selectedItem()
     if not item then return end
     state.status = operation == "craft" and "CRAFTING" or "DELIVERY"
-    drawPanel(ctx)
+    refreshPanel(ctx)
     send(ctx, operation, { name = item.name, count = count }, function(ok, data, err)
         if ok then
             state.status = "ONLINE"
@@ -235,7 +290,7 @@ local function transfer(ctx, operation, count)
         else
             state.status = "ERROR"
             ctx.notify("Storage: " .. tostring(err), ctx.config.theme.red)
-            drawPanel(ctx)
+            refreshPanel(ctx)
         end
     end)
 end
@@ -246,12 +301,13 @@ function app.onEvent(ctx, event, sender, message, protocol)
             local direction = tonumber(sender) or 1
             state.selected = math.max(1, math.min(#state.rows,
                 state.selected + (direction > 0 and 1 or -1)))
-            local page = ctx.config.storage.maxRows
+            local page = state.widgets and #state.widgets.rows
+                or ctx.config.storage.maxRows
             if state.selected < state.offset then state.offset = state.selected end
             if state.selected >= state.offset + page then
                 state.offset = state.selected - page + 1
             end
-            drawPanel(ctx)
+            refreshPanel(ctx)
             return true
         elseif event == "player_mouse_click" then
             -- AP reports mouse buttons as 1=left, 2=right, 3=middle.
@@ -311,7 +367,7 @@ function app.onEvent(ctx, event, sender, message, protocol)
             state.status = "UPDATE BRIDGE"
             state.statusDetail = "Old bridge #" .. tostring(sender)
                 .. " found; update and restart it"
-            if state.panelOpen then drawPanel(ctx) end
+            if state.panelOpen then refreshPanel(ctx) end
         end
         return
     end
@@ -324,6 +380,10 @@ function app.onEvent(ctx, event, sender, message, protocol)
 end
 
 function app.update(ctx, now)
+    if state.panelOpen and state.drawAt and now >= state.drawAt then
+        state.drawAt = nil
+        drawPanel(ctx)
+    end
     for id, pending in pairs(state.pending) do
         if now - pending.started > 50000 then
             state.pending[id] = nil
@@ -332,10 +392,21 @@ function app.update(ctx, now)
     end
 end
 
+function app.resize(ctx)
+    if not state.panelOpen then return end
+    ctx.ui.clear()
+    state.widgets = nil
+    -- Coalesce the resize burst emitted by KeyboardScreen and rebuild once at
+    -- its final dimensions, matching the radial menu behaviour.
+    state.drawAt = util.epoch() + PANEL_SETTLE_MS
+end
+
 function app.stop(ctx)
     if ctx.system.getInputMode() == "storage" then ctx.system.setInputMode(nil) end
     ctx.ui.clear()
     state.panelOpen = false
+    state.drawAt = nil
+    state.widgets = nil
 end
 
 api.registerApp(app)

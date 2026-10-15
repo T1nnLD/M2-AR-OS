@@ -81,6 +81,14 @@ Stock listing, withdrawal and deposit operate directly on these wired
 inventories. They do not use the Stock Ticker, Packagers, package addresses or
 an intermediate output chest.
 
+Storage must have a stable wired-network peripheral name such as
+`create:item_vault_0`, not a local side alias such as `left` or `right`. Attach
+an activated wired modem directly to the storage and connect it by networking
+cable to the bridge computer. Side aliases are ignored by default because
+Inventory Manager cannot reliably address them for player transfers. The
+bridge reports ignored local inventories on its status screen. This guard is
+controlled by `requireNamedInventories` in `server_config.lua`.
+
 Create Item Vaults are detected explicitly. Attach and activate a wired modem
 on any block of each assembled Vault; Create forwards that connection to the
 multiblock controller and M2OS sees its combined inventory. If several wired

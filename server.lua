@@ -2,6 +2,11 @@ local util = require("m2os.lib.util")
 
 local Server = {}
 
+local LOCAL_SIDES = {
+    left = true, right = true, top = true, bottom = true,
+    front = true, back = true
+}
+
 local function trusted(config, sender)
     if not config.trustedIds or #config.trustedIds == 0 then return true end
     for _, id in ipairs(config.trustedIds) do
@@ -107,6 +112,7 @@ local function locateInventories(config)
     local inventories = {}
     local vaultSnapshots = {}
     local duplicateEndpoints = 0
+    local ignoredLocalInventories = 0
     for _, name in ipairs(peripheral.getNames()) do
         if not isExcluded(config, name) then
             local wrapped = peripheral.wrap(name)
@@ -117,27 +123,37 @@ local function locateInventories(config)
                     and type(wrapped.size) == "function"
                     and not (type(wrapped.importItem) == "function"
                         and type(wrapped.exportItem) == "function") then
-                local kind = isItemVault(name, types) and "item_vault" or "inventory"
-                local duplicate = false
-                if kind == "item_vault" and config.deduplicateItemVaults ~= false then
-                    local snapshot = vaultSnapshot(wrapped)
-                    if snapshot and vaultSnapshots[snapshot] then
-                        duplicate = true
-                        duplicateEndpoints = duplicateEndpoints + 1
-                    elseif snapshot then
-                        vaultSnapshots[snapshot] = name
+                -- Inventory Manager transfers address inventories by their
+                -- wired-network peripheral name. Local side aliases such as
+                -- "left" are ambiguous and commonly fail in importItem and
+                -- exportItem, so never advertise them as usable storage.
+                if config.requireNamedInventories ~= false and LOCAL_SIDES[name] then
+                    ignoredLocalInventories = ignoredLocalInventories + 1
+                else
+                    local kind = isItemVault(name, types)
+                        and "item_vault" or "inventory"
+                    local duplicate = false
+                    if kind == "item_vault"
+                            and config.deduplicateItemVaults ~= false then
+                        local snapshot = vaultSnapshot(wrapped)
+                        if snapshot and vaultSnapshots[snapshot] then
+                            duplicate = true
+                            duplicateEndpoints = duplicateEndpoints + 1
+                        elseif snapshot then
+                            vaultSnapshots[snapshot] = name
+                        end
                     end
+                    if not duplicate then inventories[#inventories + 1] = {
+                        name = name,
+                        peripheral = wrapped,
+                        kind = kind
+                    } end
                 end
-                if not duplicate then inventories[#inventories + 1] = {
-                    name = name,
-                    peripheral = wrapped,
-                    kind = kind
-                } end
             end
         end
     end
     table.sort(inventories, function(a, b) return a.name < b.name end)
-    return inventories, duplicateEndpoints
+    return inventories, duplicateEndpoints, ignoredLocalInventories
 end
 
 local function scanInventories(state)
@@ -174,7 +190,8 @@ end
 local function refreshPeripherals(state)
     state.ticker = locateTicker()
     state.manager = locateManager()
-    state.inventories, state.duplicateEndpoints = locateInventories(state.config)
+    state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
+        = locateInventories(state.config)
 end
 
 local function countInventoryKind(inventories, kind)
@@ -265,6 +282,10 @@ local function printStatus(state)
         print(("Aliases: %d duplicate vault endpoint(s) ignored"):format(
             state.duplicateEndpoints))
     end
+    if (state.ignoredLocalInventories or 0) > 0 then
+        print(("Ignored: %d side inventory; use wired name"):format(
+            state.ignoredLocalInventories))
+    end
     print("Pending: " .. tostring(#state.transactions))
     print("")
     print(state.lastMessage or "Waiting for requests...")
@@ -288,12 +309,17 @@ local function handleRequest(state, sender, message)
             ticker = state.ticker ~= nil, manager = state.manager ~= nil,
             inventories = #state.inventories, direct = true,
             itemVaults = countInventoryKind(state.inventories, "item_vault"),
+            ignoredLocalInventories = state.ignoredLocalInventories or 0,
             createCrafting = config.enableCreateCrafting == true
         })
     elseif operation == "stock" then
-        state.inventories, state.duplicateEndpoints = locateInventories(config)
+        state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
+            = locateInventories(config)
         if #state.inventories == 0 then
-            response(config, sender, message.id, false, nil, "no wired inventories found")
+            local err = (state.ignoredLocalInventories or 0) > 0
+                and "only side inventories found; connect storage through an active wired modem"
+                or "no named wired inventories found"
+            response(config, sender, message.id, false, nil, err)
             return
         end
         local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
@@ -307,9 +333,13 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "Inventory Manager not found")
             return
         end
-        state.inventories, state.duplicateEndpoints = locateInventories(config)
+        state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
+            = locateInventories(config)
         if #state.inventories == 0 then
-            response(config, sender, message.id, false, nil, "no wired inventories found")
+            local err = (state.ignoredLocalInventories or 0) > 0
+                and "only side inventories found; connect storage through an active wired modem"
+                or "no named wired inventories found"
+            response(config, sender, message.id, false, nil, err)
             return
         end
         local count = math.max(1, math.floor(tonumber(payload.count) or 1))
@@ -348,9 +378,13 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "item name is required")
             return
         end
-        state.inventories, state.duplicateEndpoints = locateInventories(config)
+        state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
+            = locateInventories(config)
         if #state.inventories == 0 then
-            response(config, sender, message.id, false, nil, "no wired inventories found")
+            local err = (state.ignoredLocalInventories or 0) > 0
+                and "only side inventories found; connect storage through an active wired modem"
+                or "no named wired inventories found"
+            response(config, sender, message.id, false, nil, err)
             return
         end
         local count = math.max(1, math.floor(tonumber(payload.count) or 1))
@@ -450,7 +484,8 @@ function Server.run(config)
 
     local state = {
         config = config, modemName = modemName, ticker = nil, manager = nil,
-        inventories = {}, duplicateEndpoints = 0, transactions = {}, lastMessage = nil
+        inventories = {}, duplicateEndpoints = 0, ignoredLocalInventories = 0,
+        transactions = {}, lastMessage = nil
     }
     refreshPeripherals(state)
     printStatus(state)
@@ -468,7 +503,8 @@ function Server.run(config)
                     kind = "hello", key = config.sharedKey,
                     name = "M2OS Create Bridge", version = 3,
                     inventories = #state.inventories,
-                    itemVaults = countInventoryKind(state.inventories, "item_vault")
+                    itemVaults = countInventoryKind(state.inventories, "item_vault"),
+                    ignoredLocalInventories = state.ignoredLocalInventories or 0
                 }, config.protocol)
             elseif message.kind == "request" and message.id then
                 handleRequest(state, sender, message)
