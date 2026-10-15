@@ -34,12 +34,20 @@ The first start creates `/m2os-state.cfg`. App switches selected through the
 radial menu are remembered there.
 
 The radial menu reacts to the Keyboard module (`keyboard_open`, mouse movement,
-scroll and click) and to the Hotkey module (`glasses_key_pressed`). With only a
-Hotkey module, press once to open it and again to run the selected action.
-When both modules are installed they share the same Minecraft key; M2OS ignores
-the duplicate Hotkey event and lets the Keyboard module control the menu.
-After a normal toggle M2OS releases mouse capture and returns game control.
-Interactive actions such as Create Storage keep input until their window closes.
+scroll and click) and to the Hotkey module (`glasses_key_pressed`). It stays open
+until an action is selected or the screen is closed; it has no idle timeout.
+
+With only a Hotkey module, a short press opens the menu, later short presses move
+to the next action, and a press held for at least 0.6 seconds runs it. This mode
+never takes player control. When both modules are installed they share the same
+Minecraft key; M2OS ignores the duplicate Hotkey event and lets the Keyboard
+module provide mouse selection.
+
+Advanced Peripherals 0.8.2a does not expose a Lua method for closing its Keyboard
+Screen. Consequently, after choosing a normal toggle with the mouse, press
+`Esc` once to return to the game. M2OS shows this instruction instead of leaving
+an invisible input screen. Interactive actions such as Create Storage keep input
+until their window closes.
 
 Inside the Create Storage panel, use the wheel to select an item. Left click
 takes one, right click takes a stack, middle click deposits the held item, and

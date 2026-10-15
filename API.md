@@ -40,8 +40,10 @@ api.registerApp(app)
 return app
 ```
 
-Menu actions release Keyboard Module mouse capture after execution. An
-interactive app can keep input by setting `keepInput = true`:
+Menu actions close the radial overlay after execution. Advanced Peripherals
+0.8.2a cannot close its Keyboard Screen from Lua, so a non-interactive action
+shows an `Esc` prompt when the Keyboard module was used. An interactive app can
+keep that input screen by setting `keepInput = true`:
 
 ```lua
 ctx.menu.add({
