@@ -36,7 +36,9 @@ return {
         protocol = "m2os.storage.v1",
         sharedKey = "m2os",
         serverId = nil,
-        maxRows = 8
+        maxRows = 8,
+        gridColumns = 8,
+        gridRows = 4
     },
 
     modules = {

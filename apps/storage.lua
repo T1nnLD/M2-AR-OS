@@ -12,6 +12,9 @@ local app = {
 
 local MIN_BRIDGE_VERSION = 2
 local PANEL_SETTLE_MS = 180
+local DEFAULT_GRID_COLUMNS = 8
+local DEFAULT_GRID_ROWS = 4
+local SLOT_SIZE = 28
 
 local state = {
     modemName = nil,
@@ -27,12 +30,20 @@ local state = {
     selected = 1,
     offset = 1,
     drawAt = nil,
-    widgets = nil
+    widgets = nil,
+    pointerX = nil,
+    pointerY = nil
 }
 
 local function objectCall(object, method, ...)
     if not object or type(object[method]) ~= "function" then return false end
     return pcall(object[method], ...)
+end
+
+local function setCached(holder, key, object, method, value)
+    if holder[key] == value then return end
+    holder[key] = value
+    objectCall(object, method, value)
 end
 
 local function bridgeReady()
@@ -102,40 +113,106 @@ local function sortedStock(stock)
     return rows
 end
 
+local function compactCount(value)
+    value = tonumber(value) or 0
+    if value >= 1000000 then
+        local scaled = value / 1000000
+        return (scaled >= 10 and ("%.0fM") or ("%.1fM")):format(scaled)
+    end
+    if value >= 1000 then
+        local scaled = value / 1000
+        return (scaled >= 10 and ("%.0fK") or ("%.1fK")):format(scaled)
+    end
+    return tostring(value)
+end
+
+local function itemNamespace(item)
+    local namespace = tostring(item and item.name or "items"):match("^([^:]+):")
+    return (namespace or "items"):upper()
+end
+
+local function ensureVisible(pageSize)
+    if #state.rows == 0 then
+        state.selected, state.offset = 1, 1
+        return
+    end
+    state.selected = math.max(1, math.min(state.selected, #state.rows))
+    pageSize = math.max(1, pageSize or 1)
+    state.offset = math.floor((state.selected - 1) / pageSize) * pageSize + 1
+end
+
+local function positionPointerAtSelected()
+    local widgets = state.widgets
+    if not widgets then return end
+    ensureVisible(widgets.pageSize)
+    local visibleIndex = state.selected - state.offset + 1
+    if visibleIndex < 1 or visibleIndex > widgets.pageSize then return end
+    local column = (visibleIndex - 1) % widgets.columns
+    local row = math.floor((visibleIndex - 1) / widgets.columns)
+    state.pointerX = widgets.gridX + column * widgets.slotSize + widgets.slotSize / 2
+    state.pointerY = widgets.gridY + row * widgets.slotSize + widgets.slotSize / 2
+end
+
 local function updatePanel(ctx)
     local widgets = state.widgets
     if not widgets then return end
     local theme = ctx.config.theme
     local statusColor = bridgeReady() and theme.green or theme.amber
     if state.status == "ERROR" then statusColor = theme.red end
-    objectCall(widgets.status, "setContent", state.status)
-    objectCall(widgets.status, "setColor", statusColor)
+    setCached(widgets, "statusText", widgets.status, "setContent", state.status)
+    setCached(widgets, "statusColor", widgets.status, "setColor", statusColor)
 
     local hasRows = #state.rows > 0
     local emptyText = state.statusDetail
         or (bridgeReady() and "Storage is empty" or "No bridge connection")
-    objectCall(widgets.empty, "setContent", hasRows and "" or util.short(emptyText, 46))
-    objectCall(widgets.empty, "setColor",
+    setCached(widgets, "emptyText", widgets.empty, "setContent",
+        hasRows and "" or util.short(emptyText, 46))
+    setCached(widgets, "emptyColor", widgets.empty, "setColor",
         state.status == "UPDATE BRIDGE" and theme.amber or theme.gray)
+
+    ensureVisible(widgets.pageSize)
+    local selectedItem = state.rows[state.selected]
+    local totalPages = math.max(1, math.ceil(#state.rows / widgets.pageSize))
+    local currentPage = math.floor((state.offset - 1) / widgets.pageSize) + 1
+    setCached(widgets, "categoryText", widgets.category, "setContent",
+        selectedItem and ("v " .. itemNamespace(selectedItem)) or "v STORAGE")
+    setCached(widgets, "pageText", widgets.page, "setContent",
+        ("%d/%d"):format(currentPage, totalPages))
+    setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
+        selectedItem and util.short(util.itemLabel(selectedItem), 34) or "")
 
     for visibleIndex, entry in ipairs(widgets.rows) do
         local index = state.offset + visibleIndex - 1
         local item = state.rows[index]
         if item then
-            local opacity = index == state.selected and 0.20
-                or (index % 2 == 0 and 0.07 or 0)
-            objectCall(entry.background, "setColor",
+            local opacity = index == state.selected and 0.62 or 0.20
+            setCached(entry, "backgroundColor", entry.background, "setColor",
                 index == state.selected and theme.purple or theme.blue)
-            objectCall(entry.background, "setOpacity", opacity)
-            objectCall(entry.label, "setContent", util.short(util.itemLabel(item), 28))
-            objectCall(entry.label, "setColor", theme.white)
-            objectCall(entry.count, "setContent", tostring(item.count or 0))
-            objectCall(entry.count, "setColor", item.craftable and theme.purple or theme.blue)
+            setCached(entry, "backgroundOpacity", entry.background, "setOpacity", opacity)
+            if entry.item and entry.itemName ~= item.name then
+                entry.itemName = item.name
+                objectCall(entry.item, "setItem", item.name)
+            end
+            setCached(entry, "fallbackText", entry.fallback, "setContent",
+                entry.item and "" or "?")
+            setCached(entry, "countText", entry.count, "setContent",
+                compactCount(item.count))
+            setCached(entry, "countColor", entry.count, "setColor", theme.white)
         else
-            objectCall(entry.background, "setOpacity", 0)
-            objectCall(entry.label, "setContent", "")
-            objectCall(entry.count, "setContent", "")
+            setCached(entry, "backgroundOpacity", entry.background, "setOpacity", 0.08)
+            if entry.item and entry.itemName ~= "" then
+                entry.itemName = ""
+                objectCall(entry.item, "setItem")
+            end
+            setCached(entry, "fallbackText", entry.fallback, "setContent", "")
+            setCached(entry, "countText", entry.count, "setContent", "")
         end
+    end
+
+    if state.pointerX and state.pointerY then
+        objectCall(widgets.cursorGlow, "setPos", state.pointerX, state.pointerY, 96)
+        objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 97)
+        objectCall(widgets.cursorDot, "setPos", state.pointerX, state.pointerY, 98)
     end
 end
 
@@ -145,31 +222,70 @@ local function drawPanel(ctx)
     if not state.panelOpen or state.drawAt then return end
     local width, height = ctx.system.getSize()
     local theme = ctx.config.theme
-    local panelW, panelH = math.min(270, width - 30), math.min(176, height - 30)
+    local panelW, panelH = math.min(292, width - 30), math.min(190, height - 30)
     local x, y = (width - panelW) / 2, (height - panelH) / 2
-    local widgets = { rows = {} }
+    local columns = math.max(1, math.min(
+        ctx.config.storage.gridColumns or DEFAULT_GRID_COLUMNS,
+        math.floor((panelW - 18) / SLOT_SIZE)))
+    local gridRows = math.max(1, math.min(
+        ctx.config.storage.gridRows or DEFAULT_GRID_ROWS,
+        math.floor((panelH - 70) / SLOT_SIZE)))
+    local gridW = columns * SLOT_SIZE
+    local gridX, gridY = x + (panelW - gridW) / 2, y + 33
+    local widgets = {
+        rows = {}, columns = columns, gridRows = gridRows,
+        pageSize = columns * gridRows, slotSize = SLOT_SIZE,
+        gridX = gridX, gridY = gridY,
+        panelX = x, panelY = y, panelW = panelW, panelH = panelH
+    }
     state.widgets = widgets
 
     ctx.ui.textureRect(x, y, panelW, panelH, theme.background, 0.90, 70)
     ctx.ui.rectangle(x, y, panelW, 2, theme.purple, 1, 72)
     ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, theme.blue, 1, 72)
-    ctx.ui.text(x + 9, y + 7, "DIRECT STORAGE", theme.white, 1.05, 75)
+    ctx.ui.text(x + 9, y + 7, "M2OS STORAGE", theme.white, 1.05, 75)
     widgets.status = ctx.ui.text(x + panelW - 87, y + 8, state.status,
         theme.gray, 0.75, 75)
-
-    local maxRows = math.min(ctx.config.storage.maxRows, math.floor((panelH - 50) / 14))
+    widgets.category = ctx.ui.text(gridX, y + 23, "v STORAGE", theme.gray, 0.72, 75)
+    widgets.page = ctx.ui.text(x + panelW - 37, y + 23, "1/1", theme.gray, 0.65, 75)
     widgets.empty = ctx.ui.text(x + 10, y + 35, "", theme.gray, 0.78, 75)
-    for visibleIndex = 1, maxRows do
-        local rowY = y + 27 + (visibleIndex - 1) * 14
+    for visibleIndex = 1, widgets.pageSize do
+        local column = (visibleIndex - 1) % columns
+        local row = math.floor((visibleIndex - 1) / columns)
+        local slotX = gridX + column * SLOT_SIZE + 1
+        local slotY = gridY + row * SLOT_SIZE + 1
+        local iconX = slotX + (SLOT_SIZE - 2) / 2
+        local iconY = slotY + (SLOT_SIZE - 2) / 2
+        local okItem, itemObject = pcall(ctx.ui.raw, "Item", {
+            gui = true, x = iconX, y = iconY, z = 78
+        })
         widgets.rows[visibleIndex] = {
-            background = ctx.ui.rectangle(x + 7, rowY - 2, panelW - 14, 13,
-                theme.blue, 0, 72),
-            label = ctx.ui.text(x + 10, rowY, "", theme.white, 0.82, 75),
-            count = ctx.ui.text(x + panelW - 54, rowY, "", theme.blue, 0.82, 75)
+            background = ctx.ui.rectangle(slotX, slotY, SLOT_SIZE - 2, SLOT_SIZE - 2,
+                theme.blue, 0.12, 73),
+            item = okItem and itemObject or nil,
+            fallback = not okItem and ctx.ui.text(
+                iconX - 3, iconY - 5, "", theme.gray, 0.9, 79) or nil,
+            count = ctx.ui.text(slotX + SLOT_SIZE - 13, slotY + SLOT_SIZE - 10,
+                "", theme.white, 0.58, 82)
         }
     end
-    ctx.ui.text(x + 9, y + panelH - 18,
-        "L:take  R:stack  M:put hand  C:craft", theme.gray, 0.67, 75)
+    widgets.selectedLabel = ctx.ui.text(x + 9, y + panelH - 31,
+        "", theme.white, 0.72, 84)
+    ctx.ui.text(x + 9, y + panelH - 16,
+        "L:take  R:stack  M:put hand  C:craft", theme.gray, 0.60, 75)
+    widgets.cursorGlow = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 96, radius = 7,
+        filled = true, color = theme.purple, opacity = 0.16
+    })
+    widgets.cursorRing = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 97, radius = 4.5,
+        filled = false, borderWidth = 1.2, color = theme.white, opacity = 1
+    })
+    widgets.cursorDot = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 98, radius = 1.5,
+        filled = true, color = theme.purple, opacity = 1
+    })
+    if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
 end
 
@@ -217,6 +333,7 @@ local function togglePanel(ctx)
     state.widgets = nil
     state.drawAt = nil
     if state.panelOpen then
+        state.pointerX, state.pointerY = nil, nil
         -- KeyboardScreen reports its final GUI size a few ticks after opening.
         -- Delay the first build so the panel never flashes at the old origin.
         state.drawAt = util.epoch()
@@ -295,18 +412,51 @@ local function transfer(ctx, operation, count)
     end)
 end
 
+local function movePointer(ctx, dx, dy)
+    local widgets = state.widgets
+    if not widgets then return end
+    state.pointerX = util.clamp((state.pointerX or widgets.gridX) + dx,
+        widgets.panelX + 3, widgets.panelX + widgets.panelW - 3)
+    state.pointerY = util.clamp((state.pointerY or widgets.gridY) + dy,
+        widgets.panelY + 3, widgets.panelY + widgets.panelH - 3)
+
+    local relativeX = state.pointerX - widgets.gridX
+    local relativeY = state.pointerY - widgets.gridY
+    local gridWidth = widgets.columns * widgets.slotSize
+    local gridHeight = widgets.gridRows * widgets.slotSize
+    if relativeX >= 0 and relativeX < gridWidth
+            and relativeY >= 0 and relativeY < gridHeight then
+        local column = math.floor(relativeX / widgets.slotSize)
+        local row = math.floor(relativeY / widgets.slotSize)
+        local index = state.offset + row * widgets.columns + column
+        if state.rows[index] then state.selected = index end
+    end
+    updatePanel(ctx)
+end
+
+local function numericArguments(...)
+    local out = {}
+    for _, value in ipairs({ ... }) do
+        if type(value) == "number" then out[#out + 1] = value end
+    end
+    return out
+end
+
 function app.onEvent(ctx, event, sender, message, protocol)
     if state.panelOpen then
-        if event == "player_mouse_scroll" then
+        if event == "player_mouse_move" then
+            local values = numericArguments(sender, message, protocol)
+            local dx = values[#values - 1] or 0
+            local dy = values[#values] or 0
+            movePointer(ctx, dx, dy)
+            return true
+        elseif event == "player_mouse_scroll" then
             local direction = tonumber(sender) or 1
             state.selected = math.max(1, math.min(#state.rows,
                 state.selected + (direction > 0 and 1 or -1)))
-            local page = state.widgets and #state.widgets.rows
-                or ctx.config.storage.maxRows
-            if state.selected < state.offset then state.offset = state.selected end
-            if state.selected >= state.offset + page then
-                state.offset = state.selected - page + 1
-            end
+            local page = state.widgets and state.widgets.pageSize or 1
+            ensureVisible(page)
+            positionPointerAtSelected()
             refreshPanel(ctx)
             return true
         elseif event == "player_mouse_click" then
@@ -396,6 +546,7 @@ function app.resize(ctx)
     if not state.panelOpen then return end
     ctx.ui.clear()
     state.widgets = nil
+    state.pointerX, state.pointerY = nil, nil
     -- Coalesce the resize burst emitted by KeyboardScreen and rebuild once at
     -- its final dimensions, matching the radial menu behaviour.
     state.drawAt = util.epoch() + PANEL_SETTLE_MS

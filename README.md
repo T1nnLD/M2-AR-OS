@@ -49,10 +49,13 @@ Screen. Consequently, after choosing a normal toggle with the mouse, press
 an invisible input screen. Interactive actions such as Create Storage keep input
 until their window closes.
 
-Inside the Create Storage panel, use the wheel to select an item. Left click
-takes one, right click takes a stack, middle click deposits the held item, and
-`C` requests one crafted item when optional Create crafting is enabled. Closing
-the Keyboard module closes the panel.
+The Create Storage panel is a paged grid rendered with Advanced Peripherals'
+native `Item` overlay objects. Icons come directly from Minecraft, including
+modded items and active resource packs, so no texture download is needed. Move
+the mouse or use the wheel to select an item. Left click takes one, right click
+takes a stack, middle click deposits the held item, and `C` requests one crafted
+item when optional Create crafting is enabled. Closing the Keyboard module
+closes the panel.
 
 ## Create storage bridge
 
