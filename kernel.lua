@@ -127,6 +127,9 @@ function Kernel:_makeContext(owner)
         enable = function(id, enabled) return kernel:setEnabled(id, enabled) end,
         stop = function() kernel.running = false end,
         emit = function(name, ...) os.queueEvent(name, ...) end,
+        -- Used by latency-sensitive input cursors. Callers must throttle this;
+        -- normal UI updates remain batched by the kernel tick.
+        flushOverlay = function() kernel.overlay.update() end,
         now = util.epoch
     }
 

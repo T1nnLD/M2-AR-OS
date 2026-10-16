@@ -18,6 +18,7 @@ local SLOT_SIZE = 28
 local INVENTORY_COLUMNS = 9
 local INVENTORY_ROWS = 4
 local INVENTORY_SLOT_SIZE = 24
+local CURSOR_FLUSH_INTERVAL_MS = 25
 local SEARCH_DELAY_MS = 300
 local STORAGE_MUTED = 0x344252
 
@@ -43,6 +44,7 @@ local state = {
     pointerX = nil,
     pointerY = nil,
     pointerDirty = false,
+    lastPointerFlush = 0,
     query = "",
     appliedQuery = "",
     searchActive = false,
@@ -511,6 +513,7 @@ local function togglePanel(ctx)
     if state.panelOpen then
         state.pointerX, state.pointerY = nil, nil
         state.pointerDirty = false
+        state.lastPointerFlush = 0
         state.searchActive = false
         state.ignoreNextChar = false
         -- KeyboardScreen reports its final GUI size a few ticks after opening.
@@ -708,6 +711,12 @@ local function movePointer(ctx, dx, dy)
         end
     end
     state.pointerDirty = true
+    local now = util.epoch()
+    if now - state.lastPointerFlush >= CURSOR_FLUSH_INTERVAL_MS then
+        state.lastPointerFlush = now
+        objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 97)
+        if ctx.system.flushOverlay then pcall(ctx.system.flushOverlay) end
+    end
 end
 
 local function mouseDelta(first, second, third)
@@ -943,6 +952,7 @@ function app.resize(ctx)
     state.widgets = nil
     state.pointerX, state.pointerY = nil, nil
     state.pointerDirty = false
+    state.lastPointerFlush = 0
     -- Coalesce the resize burst emitted by KeyboardScreen and rebuild once at
     -- its final dimensions, matching the radial menu behaviour.
     state.drawAt = util.epoch() + PANEL_SETTLE_MS
@@ -957,6 +967,7 @@ function app.stop(ctx)
     state.drawAt = nil
     state.widgets = nil
     state.pointerDirty = false
+    state.lastPointerFlush = 0
 end
 
 api.registerApp(app)
