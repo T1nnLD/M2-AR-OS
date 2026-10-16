@@ -21,6 +21,9 @@ local INVENTORY_SLOT_SIZE = 24
 local CURSOR_FLUSH_INTERVAL_MS = 25
 local SEARCH_DELAY_MS = 300
 local STORAGE_MUTED = 0x344252
+local QUEUE_VISIBLE_ROWS = 4
+local QUEUE_HISTORY_LIMIT = 12
+local QUEUE_RESULT_LIFETIME_MS = 6000
 
 local state = {
     modemName = nil,
@@ -51,7 +54,9 @@ local state = {
     searchAt = nil,
     ignoreNextChar = false,
     stockGeneration = 0,
-    inventoryGeneration = 0
+    inventoryGeneration = 0,
+    transferQueue = {},
+    transferSequence = 0
 }
 
 local function objectCall(object, method, ...)
@@ -165,6 +170,79 @@ local function readableItemLabel(item)
     return label
 end
 
+local function queueOperation(operation, item, count)
+    state.transferSequence = state.transferSequence + 1
+    local entry = {
+        id = state.transferSequence,
+        operation = operation,
+        name = item and item.name or nil,
+        label = item and readableItemLabel(item) or "held stack",
+        requested = math.max(1, tonumber(count) or 1),
+        status = "pending",
+        started = util.epoch()
+    }
+    table.insert(state.transferQueue, 1, entry)
+
+    while #state.transferQueue > QUEUE_HISTORY_LIMIT do
+        local removed = false
+        for index = #state.transferQueue, 1, -1 do
+            if state.transferQueue[index].status ~= "pending" then
+                table.remove(state.transferQueue, index)
+                removed = true
+                break
+            end
+        end
+        if not removed then break end
+    end
+    return entry
+end
+
+local function finishQueueOperation(entry, ok, data, err)
+    if not entry then return end
+    entry.finished = util.epoch()
+    entry.expires = entry.finished + QUEUE_RESULT_LIFETIME_MS
+    entry.moved = tonumber(data and data.moved) or 0
+    entry.error = err and tostring(err) or nil
+    local requested = tonumber(data and data.requested) or entry.requested
+    local remaining = tonumber(data and data.remaining) or 0
+    entry.requested = requested
+    if not ok then
+        entry.status = "failed"
+    elseif remaining > 0 or entry.moved < requested then
+        entry.status = "partial"
+    else
+        entry.status = "done"
+    end
+end
+
+local function queueDetail(entry)
+    local action = entry.operation == "withdraw" and "GET"
+        or entry.operation == "deposit" and "PUT"
+        or entry.operation == "craft" and "MAKE" or "DO"
+    if entry.status == "pending" then
+        return ("%s x%d  WAIT"):format(action, entry.requested)
+    end
+    if entry.status == "partial" then
+        return ("%s %d/%d PART"):format(action, entry.moved or 0, entry.requested)
+    end
+    if entry.status == "failed" then
+        return ("%s x%d  FAIL"):format(action, entry.requested)
+    end
+    return ("%s x%d  DONE"):format(action, entry.moved or entry.requested)
+end
+
+local function pruneTransferQueue(now)
+    local changed = false
+    for index = #state.transferQueue, 1, -1 do
+        local entry = state.transferQueue[index]
+        if entry.expires and now >= entry.expires then
+            table.remove(state.transferQueue, index)
+            changed = true
+        end
+    end
+    return changed
+end
+
 local function setCellGeometry(entry, x, y, size)
     local key = ("%.2f:%.2f:%d"):format(x, y, size)
     if entry.geometryKey == key then return end
@@ -260,6 +338,44 @@ local function updatePanel(ctx)
         storageView and "L:take  R:stack  I:inventory"
             or "CLICK: DEPOSIT FULL STACK  I:storage")
 
+    if widgets.queueRows then
+        local hidden = math.max(0, #state.transferQueue - QUEUE_VISIBLE_ROWS)
+        setCached(widgets, "queueTitleText", widgets.queueTitle, "setContent",
+            hidden > 0 and ("QUEUE  +%d"):format(hidden) or "QUEUE")
+        for index, row in ipairs(widgets.queueRows) do
+            local queued = state.transferQueue[index]
+            if queued then
+                local queueColor = queued.status == "failed" and theme.red
+                    or queued.status == "done" and theme.green
+                    or theme.amber
+                setCached(row, "backgroundColor", row.background, "setColor", queueColor)
+                setCached(row, "backgroundOpacity", row.background, "setOpacity",
+                    queued.status == "pending" and 0.34 or 0.20)
+                setCached(row, "labelText", row.label, "setContent",
+                    util.short(queued.label, 16))
+                setCached(row, "labelColor", row.label, "setColor", theme.white)
+                setCached(row, "detailText", row.detail, "setContent", queueDetail(queued))
+                setCached(row, "detailColor", row.detail, "setColor", queueColor)
+                if row.item and row.itemName ~= queued.name then
+                    row.itemName = queued.name
+                    objectCall(row.item, "setItem", queued.name)
+                end
+            else
+                setCached(row, "backgroundOpacity", row.background, "setOpacity", 0.12)
+                setCached(row, "labelText", row.label, "setContent", "")
+                setCached(row, "detailText", row.detail, "setContent", "")
+                if row.item and row.itemName ~= "" then
+                    row.itemName = ""
+                    objectCall(row.item, "setItem")
+                end
+            end
+        end
+    elseif state.transferQueue[1] then
+        local queued = state.transferQueue[1]
+        setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
+            util.short("QUEUE: " .. queueDetail(queued) .. " " .. queued.label, 42))
+    end
+
     local trackHeight = widgets.gridRows * widgets.slotSize - 2
     local thumbHeight = math.max(12, trackHeight / totalPages)
     local thumbTravel = math.max(0, trackHeight - thumbHeight)
@@ -340,7 +456,7 @@ local function drawPanel(ctx)
     if not state.panelOpen or state.drawAt then return end
     local width, height = ctx.system.getSize()
     local theme = ctx.config.theme
-    local panelW, panelH = math.min(292, width - 30), math.min(204, height - 30)
+    local panelW, panelH = math.min(356, width - 30), math.min(204, height - 30)
     local x, y = (width - panelW) / 2, (height - panelH) / 2
     local columns = math.max(1, math.min(
         ctx.config.storage.gridColumns or DEFAULT_GRID_COLUMNS,
@@ -349,7 +465,10 @@ local function drawPanel(ctx)
         ctx.config.storage.gridRows or DEFAULT_GRID_ROWS,
         math.floor((panelH - 84) / SLOT_SIZE)))
     local gridW = columns * SLOT_SIZE
-    local gridX, gridY = x + (panelW - gridW) / 2 - 3, y + 43
+    local showQueueSidebar = panelW >= gridW + 118
+    local gridX = showQueueSidebar and x + 10
+        or x + (panelW - gridW) / 2 - 3
+    local gridY = y + 43
     local scrollX = gridX + gridW + 7
     local inventoryGridW = INVENTORY_COLUMNS * INVENTORY_SLOT_SIZE
     local inventoryGridH = INVENTORY_ROWS * INVENTORY_SLOT_SIZE
@@ -367,7 +486,10 @@ local function drawPanel(ctx)
         storageTabW = 58, storageTabH = 17,
         inventoryTabX = x + 72, inventoryTabY = y + 4,
         inventoryTabW = 70, inventoryTabH = 17,
-        storageTabCenter = x + 37, inventoryTabCenter = x + 107
+        storageTabCenter = x + 37, inventoryTabCenter = x + 107,
+        showQueueSidebar = showQueueSidebar,
+        queueX = gridX + gridW + 13,
+        queueW = x + panelW - 8 - (gridX + gridW + 13)
     }
     state.widgets = widgets
 
@@ -414,6 +536,26 @@ local function drawPanel(ctx)
         3, gridRows * SLOT_SIZE - 2, theme.gray, 0.22, 75)
     widgets.scrollThumb = ctx.ui.rectangle(scrollX - 1.5, gridY + 1,
         3, 12, theme.purple, 0.95, 79)
+    if showQueueSidebar then
+        widgets.queueRows = {}
+        widgets.queueTitle = ctx.ui.text(widgets.queueX, gridY,
+            "QUEUE", theme.gray, 0.62, 80)
+        for index = 1, QUEUE_VISIBLE_ROWS do
+            local rowY = gridY + 13 + (index - 1) * 25
+            local okItem, itemObject = pcall(ctx.ui.raw, "Item", {
+                gui = true, x = widgets.queueX + 10, y = rowY + 10, z = 82
+            })
+            widgets.queueRows[index] = {
+                background = ctx.ui.rectangle(widgets.queueX, rowY,
+                    widgets.queueW, 22, STORAGE_MUTED, 0.12, 76),
+                item = okItem and itemObject or nil,
+                label = ctx.ui.text(widgets.queueX + 21, rowY + 3,
+                    "", theme.white, 0.51, 84),
+                detail = ctx.ui.text(widgets.queueX + 21, rowY + 12,
+                    "", theme.gray, 0.45, 84)
+            }
+        end
+    end
     widgets.selectedLabel = ctx.ui.text(x + 9, y + panelH - 31,
         "", theme.white, 0.72, 84)
     widgets.footer = ctx.ui.text(x + 9, y + panelH - 16,
@@ -540,6 +682,8 @@ function app.start(ctx)
     state.playerCapacity = 0
     state.selectedPlayerSlot = nil
     state.inventoryGeneration = 0
+    state.transferQueue = {}
+    state.transferSequence = 0
     ctx.services.provide("storage", {
         discover = function() return discover(ctx) end,
         status = function()
@@ -590,6 +734,7 @@ local function transfer(ctx, operation, count)
     local item = selectedItem()
     if not item then return end
     local requested = math.min(math.max(1, tonumber(count) or 1), item.count or 1)
+    local queued = queueOperation(operation, item, requested)
     if operation == "withdraw" then
         state.stockGeneration = state.stockGeneration + 1
         item.count = math.max(0, (item.count or 0) - requested)
@@ -601,6 +746,7 @@ local function transfer(ctx, operation, count)
     state.status = operation == "craft" and "CRAFTING" or "DELIVERY"
     refreshPanel(ctx)
     send(ctx, operation, { name = item.name, count = requested }, function(ok, data, err)
+        finishQueueOperation(queued, ok, data, err)
         if ok then
             state.status = "ONLINE"
             local moved = tonumber(data and data.moved) or 0
@@ -638,6 +784,7 @@ local function depositPlayerSlot(ctx, slot)
     if not stack then return end
     local expectedName = stack.name
     local expectedCount = tonumber(stack.count) or 0
+    local queued = queueOperation("deposit", stack, expectedCount)
 
     -- Hide it immediately. The authoritative refresh below restores whatever
     -- remained when a storage accepted only part of the stack.
@@ -648,6 +795,7 @@ local function depositPlayerSlot(ctx, slot)
     refreshPanel(ctx)
 
     send(ctx, "deposit", { slot = slot, name = expectedName }, function(ok, data, err)
+        finishQueueOperation(queued, ok, data, err)
         if ok then
             state.status = "ONLINE"
             local moved = tonumber(data and data.moved) or 0
@@ -670,7 +818,10 @@ local function depositPlayerSlot(ctx, slot)
 end
 
 local function depositHand(ctx)
+    local queued = queueOperation("deposit", nil, 64)
+    refreshPanel(ctx)
     send(ctx, "deposit", { hand = true, count = 64 }, function(ok, data, err)
+        finishQueueOperation(queued, ok, data, err)
         ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
             or ("Deposit: " .. tostring(err)),
             ok and ctx.config.theme.green or ctx.config.theme.red)
@@ -937,6 +1088,7 @@ function app.update(ctx, now)
         state.searchAt = nil
         refresh(ctx, state.query)
     end
+    if pruneTransferQueue(now) and state.panelOpen then refreshPanel(ctx) end
     for id, pending in pairs(state.pending) do
         local timeout = pending.operation == "craft" and 50000 or 8000
         if now - pending.started > timeout then
