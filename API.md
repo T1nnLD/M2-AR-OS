@@ -104,6 +104,8 @@ end)
 
 storage.withdraw("minecraft:iron_ingot", 16, callback)
 storage.deposit("minecraft:cobblestone", 64, callback)
+storage.playerInventory(callback) -- data.slots and data.capacity
+storage.depositSlot(12, callback) -- deposits the complete stack in slot 12
 storage.craft("minecraft:precision_mechanism", 1, callback)
 storage.inspect({
     dimension = "minecraft:overworld", x = 10, y = 64, z = -20

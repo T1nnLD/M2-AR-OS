@@ -199,6 +199,33 @@ local function movedAmount(value)
     return tonumber(value) or 0
 end
 
+local function playerInventory(manager)
+    local okList, raw = pcall(manager.list)
+    if not okList or type(raw) ~= "table" then
+        return nil, tostring(raw or "cannot read player inventory")
+    end
+    local capacity = 0
+    if type(manager.size) == "function" then
+        local okSize, value = pcall(manager.size)
+        if okSize then capacity = math.max(0, tonumber(value) or 0) end
+    end
+    local slots = {}
+    for key, stack in pairs(raw) do
+        local slot = tonumber(key)
+        if slot and type(stack) == "table" and stack.name then
+            slots[#slots + 1] = {
+                slot = slot,
+                name = stack.name,
+                displayName = stack.displayName or stack.label,
+                count = tonumber(stack.count) or 0
+            }
+            capacity = math.max(capacity, slot)
+        end
+    end
+    table.sort(slots, function(a, b) return a.slot < b.slot end)
+    return { slots = slots, capacity = capacity }
+end
+
 local function classifyInventoryError(value)
     local message = tostring(value or "unknown Inventory Manager error")
     local lower = message:lower()
@@ -397,6 +424,17 @@ local function handleRequest(state, sender, message)
             ignoredLocalInventories = state.ignoredLocalInventories or 0,
             createCrafting = config.enableCreateCrafting == true
         })
+    elseif operation == "player_inventory" then
+        if not state.manager then
+            response(config, sender, message.id, false, nil, "Inventory Manager not found")
+            return
+        end
+        local inventory, err = playerInventory(state.manager)
+        if not inventory then
+            response(config, sender, message.id, false, nil, err)
+            return
+        end
+        response(config, sender, message.id, true, inventory)
     elseif operation == "stock" then
         refreshInventories(state)
         if #state.inventories == 0 then
@@ -419,8 +457,37 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, noInventoryError(state))
             return
         end
-        local count = math.max(1, math.floor(tonumber(payload.count) or 1))
         local itemName = payload.name
+        local fromSlot
+        local count
+        if payload.slot ~= nil then
+            fromSlot = math.floor(tonumber(payload.slot) or 0)
+            local player, err = playerInventory(state.manager)
+            if not player then
+                response(config, sender, message.id, false, nil, err)
+                return
+            end
+            local stack
+            for _, entry in ipairs(player.slots) do
+                if entry.slot == fromSlot then stack = entry break end
+            end
+            if not stack then
+                response(config, sender, message.id, false, nil,
+                    "player inventory slot is empty")
+                return
+            end
+            if itemName and itemName ~= stack.name then
+                response(config, sender, message.id, false, nil,
+                    "player inventory changed; try again")
+                return
+            end
+            itemName = stack.name
+            -- A slot deposit always means the complete current stack. The
+            -- client cannot accidentally request a single item from it.
+            count = math.max(1, math.floor(tonumber(stack.count) or 1))
+        else
+            count = math.max(1, math.floor(tonumber(payload.count) or 1))
+        end
         if payload.hand and not itemName and type(state.manager.getItemInHand) == "function" then
             local handOk, hand = pcall(state.manager.getItemInHand)
             if handOk and type(hand) == "table" then itemName = hand.name end
@@ -432,15 +499,16 @@ local function handleRequest(state, sender, message)
         local moved, lastError = 0, nil
         for _, inventory in ipairs(state.inventories) do
             if moved >= count then break end
-            local ok, value = pcall(state.manager.exportItem, inventory.name, {
-                name = itemName, count = count - moved
-            })
+            local filter = { name = itemName, count = count - moved }
+            if fromSlot then filter.fromSlot = fromSlot end
+            local ok, value = pcall(state.manager.exportItem, inventory.name, filter)
             if ok then moved = moved + movedAmount(value)
             else lastError = value end
         end
         if moved > 0 then
             response(config, sender, message.id, true, {
-                requested = count, moved = moved, remaining = math.max(0, count - moved)
+                requested = count, moved = moved, remaining = math.max(0, count - moved),
+                complete = moved >= count, slot = fromSlot
             })
         else
             response(config, sender, message.id, false, nil,
@@ -576,7 +644,7 @@ function Server.run(config)
                 state.lastMessage = ("#%d discover"):format(sender)
                 rednet.send(sender, {
                     kind = "hello", key = config.sharedKey,
-                    name = "M2OS Create Bridge", version = 3,
+                    name = "M2OS Create Bridge", version = 4,
                     inventories = #state.inventories,
                     detectedInventories = state.discoveredInventoryCount,
                     incompatibleInventories = #state.incompatibleInventories,

@@ -10,11 +10,14 @@ local app = {
     persistent = false
 }
 
-local MIN_BRIDGE_VERSION = 2
+local MIN_BRIDGE_VERSION = 4
 local PANEL_SETTLE_MS = 180
 local DEFAULT_GRID_COLUMNS = 8
 local DEFAULT_GRID_ROWS = 4
 local SLOT_SIZE = 28
+local INVENTORY_COLUMNS = 9
+local INVENTORY_ROWS = 4
+local INVENTORY_SLOT_SIZE = 24
 local SEARCH_DELAY_MS = 300
 local STORAGE_MUTED = 0x344252
 
@@ -26,6 +29,10 @@ local state = {
     sequence = 0,
     panelOpen = false,
     rows = {},
+    playerSlots = {},
+    playerCapacity = 0,
+    selectedPlayerSlot = nil,
+    view = "storage",
     status = "OFFLINE",
     statusDetail = nil,
     legacyServerId = nil,
@@ -40,7 +47,8 @@ local state = {
     searchActive = false,
     searchAt = nil,
     ignoreNextChar = false,
-    stockGeneration = 0
+    stockGeneration = 0,
+    inventoryGeneration = 0
 }
 
 local function objectCall(object, method, ...)
@@ -134,6 +142,13 @@ local function compactCount(value)
     return tostring(value)
 end
 
+-- Inventory Manager numbers the hotbar as slots 1..9. Display it on the last
+-- row, matching the familiar Minecraft inventory layout.
+local function playerSlotForCell(cell)
+    if cell <= 27 then return cell + 9 end
+    return cell - 27
+end
+
 local function ensureVisible(pageSize)
     if #state.rows == 0 then
         state.selected, state.offset = 1, 1
@@ -165,9 +180,12 @@ local function updatePanel(ctx)
     setCached(widgets, "statusText", widgets.status, "setContent", state.status)
     setCached(widgets, "statusColor", widgets.status, "setColor", statusColor)
 
-    local hasRows = #state.rows > 0
+    local storageView = state.view == "storage"
+    local hasRows = storageView and #state.rows > 0
+        or (not storageView and next(state.playerSlots) ~= nil)
     local emptyText = state.statusDetail
-        or (bridgeReady() and "Storage is empty" or "No bridge connection")
+        or (bridgeReady() and (storageView and "Storage is empty"
+            or "Player inventory is empty") or "No bridge connection")
     setCached(widgets, "emptyText", widgets.empty, "setContent",
         hasRows and "" or util.short(emptyText, 46))
     setCached(widgets, "emptyColor", widgets.empty, "setColor",
@@ -183,17 +201,35 @@ local function updatePanel(ctx)
     else
         searchText = state.searchActive and "> " or "SEARCH... [F]"
     end
-    setCached(widgets, "searchTextValue", widgets.searchText, "setContent", searchText)
+    setCached(widgets, "searchTextValue", widgets.searchText, "setContent",
+        storageView and searchText or "CLICK A STACK TO DEPOSIT IT")
     setCached(widgets, "searchTextColor", widgets.searchText, "setColor",
-        state.searchActive and theme.white or theme.gray)
+        storageView and state.searchActive and theme.white or theme.gray)
     setCached(widgets, "searchBackgroundColor", widgets.searchBackground, "setColor",
-        state.searchActive and theme.purple or STORAGE_MUTED)
+        storageView and state.searchActive and theme.purple or STORAGE_MUTED)
     setCached(widgets, "searchBackgroundOpacity", widgets.searchBackground,
-        "setOpacity", state.searchActive and 0.48 or 0.24)
+        "setOpacity", storageView and (state.searchActive and 0.48 or 0.24) or 0.34)
     setCached(widgets, "pageText", widgets.page, "setContent",
-        ("%d/%d"):format(currentPage, totalPages))
+        storageView and ("%d/%d"):format(currentPage, totalPages) or "")
+    local selectedPlayer = state.selectedPlayerSlot
+        and state.playerSlots[state.selectedPlayerSlot] or nil
+    local labelItem = storageView and selectedItem or nil
+    if not storageView then labelItem = selectedPlayer end
     setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
-        selectedItem and util.short(util.itemLabel(selectedItem), 34) or "")
+        labelItem and util.short(util.itemLabel(labelItem), 34) or "")
+    setCached(widgets, "storageTabColor", widgets.storageTab, "setColor",
+        storageView and theme.white or theme.gray)
+    setCached(widgets, "inventoryTabColor", widgets.inventoryTab, "setColor",
+        storageView and theme.gray or theme.white)
+    local tabMarkerX = storageView and widgets.storageTabCenter
+        or widgets.inventoryTabCenter
+    if widgets.tabMarkerX ~= tabMarkerX then
+        widgets.tabMarkerX = tabMarkerX
+        objectCall(widgets.tabMarker, "setPos", tabMarkerX, widgets.panelY + 19, 77)
+    end
+    setCached(widgets, "footerText", widgets.footer, "setContent",
+        storageView and "L:take  R:stack  I:inventory"
+            or "CLICK: DEPOSIT FULL STACK  I:storage")
 
     local trackHeight = widgets.gridRows * widgets.slotSize - 2
     local thumbHeight = math.max(12, trackHeight / totalPages)
@@ -210,12 +246,14 @@ local function updatePanel(ctx)
         objectCall(widgets.scrollThumb, "setPos", widgets.scrollX, thumbCenter, 79)
     end
     setCached(widgets, "scrollOpacity", widgets.scrollThumb, "setOpacity",
-        totalPages > 1 and 0.95 or 0.32)
+        storageView and (totalPages > 1 and 0.95 or 0.32) or 0)
+    setCached(widgets, "scrollTrackOpacity", widgets.scrollTrack, "setOpacity",
+        storageView and 0.22 or 0)
 
     for visibleIndex, entry in ipairs(widgets.rows) do
         local index = state.offset + visibleIndex - 1
         local item = state.rows[index]
-        if item then
+        if storageView and item then
             local opacity = index == state.selected and 0.92 or 0.72
             setCached(entry, "backgroundColor", entry.background, "setColor",
                 index == state.selected and theme.purple or STORAGE_MUTED)
@@ -231,6 +269,34 @@ local function updatePanel(ctx)
             setCached(entry, "countColor", entry.count, "setColor", theme.white)
         else
             setCached(entry, "backgroundOpacity", entry.background, "setOpacity", 0.36)
+            if entry.item and entry.itemName ~= "" then
+                entry.itemName = ""
+                objectCall(entry.item, "setItem")
+            end
+            setCached(entry, "fallbackText", entry.fallback, "setContent", "")
+            setCached(entry, "countText", entry.count, "setContent", "")
+        end
+    end
+
+    for cell, entry in ipairs(widgets.playerRows) do
+        local slot = playerSlotForCell(cell)
+        local item = state.playerSlots[slot]
+        if not storageView and item then
+            setCached(entry, "backgroundColor", entry.background, "setColor",
+                slot == state.selectedPlayerSlot and theme.purple or STORAGE_MUTED)
+            setCached(entry, "backgroundOpacity", entry.background, "setOpacity",
+                slot == state.selectedPlayerSlot and 0.92 or 0.72)
+            if entry.item and entry.itemName ~= item.name then
+                entry.itemName = item.name
+                objectCall(entry.item, "setItem", item.name)
+            end
+            setCached(entry, "fallbackText", entry.fallback, "setContent",
+                entry.item and "" or "?")
+            setCached(entry, "countText", entry.count, "setContent",
+                compactCount(item.count))
+        else
+            setCached(entry, "backgroundOpacity", entry.background, "setOpacity",
+                storageView and 0 or 0.30)
             if entry.item and entry.itemName ~= "" then
                 entry.itemName = ""
                 objectCall(entry.item, "setItem")
@@ -264,13 +330,23 @@ local function drawPanel(ctx)
     local gridW = columns * SLOT_SIZE
     local gridX, gridY = x + (panelW - gridW) / 2 - 3, y + 43
     local scrollX = gridX + gridW + 7
+    local inventoryGridW = INVENTORY_COLUMNS * INVENTORY_SLOT_SIZE
+    local inventoryGridH = INVENTORY_ROWS * INVENTORY_SLOT_SIZE
     local widgets = {
-        rows = {}, columns = columns, gridRows = gridRows,
+        rows = {}, playerRows = {}, columns = columns, gridRows = gridRows,
         pageSize = columns * gridRows, slotSize = SLOT_SIZE,
         gridX = gridX, gridY = gridY, scrollX = scrollX,
+        inventoryGridX = gridX + (gridW - inventoryGridW) / 2,
+        inventoryGridY = gridY + (gridRows * SLOT_SIZE - inventoryGridH) / 2,
+        inventoryGridW = inventoryGridW, inventoryGridH = inventoryGridH,
         searchX = gridX, searchY = y + 22, searchW = gridW, searchH = 15,
         scrollY = gridY + 1, scrollH = gridRows * SLOT_SIZE - 2,
-        panelX = x, panelY = y, panelW = panelW, panelH = panelH
+        panelX = x, panelY = y, panelW = panelW, panelH = panelH,
+        storageTabX = x + 8, storageTabY = y + 4,
+        storageTabW = 58, storageTabH = 17,
+        inventoryTabX = x + 72, inventoryTabY = y + 4,
+        inventoryTabW = 70, inventoryTabH = 17,
+        storageTabCenter = x + 37, inventoryTabCenter = x + 107
     }
     state.widgets = widgets
 
@@ -279,8 +355,11 @@ local function drawPanel(ctx)
     ctx.ui.rectangle(x, y, panelW, panelH, theme.background, 1, 70)
     ctx.ui.rectangle(x, y, panelW, 2, theme.purple, 1, 72)
     ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, STORAGE_MUTED, 1, 72)
-    ctx.ui.text(x + 9, y + 7, "M2OS STORAGE", theme.white, 1.05, 75)
-    widgets.status = ctx.ui.text(x + panelW - 87, y + 8, state.status,
+    widgets.storageTab = ctx.ui.text(x + 9, y + 7, "STORAGE", theme.white, 0.78, 75)
+    widgets.inventoryTab = ctx.ui.text(x + 74, y + 7, "INVENTORY", theme.gray, 0.78, 75)
+    widgets.tabMarker = ctx.ui.rectangle(
+        widgets.storageTabCenter - 27, y + 18, 54, 2, theme.purple, 1, 77)
+    widgets.status = ctx.ui.text(x + panelW - 70, y + 8, state.status,
         theme.gray, 0.75, 75)
     widgets.searchBackground = ctx.ui.rectangle(
         gridX, y + 22, gridW, 15, STORAGE_MUTED, 0.52, 73)
@@ -308,14 +387,35 @@ local function drawPanel(ctx)
                 "", theme.white, 0.58, 82)
         }
     end
+    for slot = 1, INVENTORY_COLUMNS * INVENTORY_ROWS do
+        local column = (slot - 1) % INVENTORY_COLUMNS
+        local row = math.floor((slot - 1) / INVENTORY_COLUMNS)
+        local slotX = widgets.inventoryGridX + column * INVENTORY_SLOT_SIZE + 1
+        local slotY = widgets.inventoryGridY + row * INVENTORY_SLOT_SIZE + 1
+        local iconX = slotX + (INVENTORY_SLOT_SIZE - 2) / 2
+        local iconY = slotY + (INVENTORY_SLOT_SIZE - 2) / 2
+        local okItem, itemObject = pcall(ctx.ui.raw, "Item", {
+            gui = true, x = iconX, y = iconY, z = 80
+        })
+        widgets.playerRows[slot] = {
+            background = ctx.ui.rectangle(slotX, slotY,
+                INVENTORY_SLOT_SIZE - 2, INVENTORY_SLOT_SIZE - 2,
+                STORAGE_MUTED, 0, 74),
+            item = okItem and itemObject or nil,
+            fallback = not okItem and ctx.ui.text(
+                iconX - 3, iconY - 5, "", theme.gray, 0.75, 81) or nil,
+            count = ctx.ui.text(slotX + INVENTORY_SLOT_SIZE - 11,
+                slotY + INVENTORY_SLOT_SIZE - 8, "", theme.white, 0.50, 83)
+        }
+    end
     widgets.scrollTrack = ctx.ui.rectangle(scrollX - 1.5, gridY + 1,
         3, gridRows * SLOT_SIZE - 2, theme.gray, 0.22, 75)
     widgets.scrollThumb = ctx.ui.rectangle(scrollX - 1.5, gridY + 1,
         3, 12, theme.purple, 0.95, 79)
     widgets.selectedLabel = ctx.ui.text(x + 9, y + panelH - 31,
         "", theme.white, 0.72, 84)
-    ctx.ui.text(x + 9, y + panelH - 16,
-        "L:take R:stack M/P:deposit C:craft", theme.gray, 0.60, 75)
+    widgets.footer = ctx.ui.text(x + 9, y + panelH - 16,
+        "L:take  R:stack  I:inventory", theme.gray, 0.60, 75)
     widgets.cursorGlow = ctx.ui.raw("Circle", {
         gui = true, x = gridX, y = gridY, z = 96, radius = 7,
         filled = true, color = theme.purple, opacity = 0.16
@@ -337,6 +437,37 @@ local function refreshPanel(ctx)
     elseif state.panelOpen and not state.drawAt then drawPanel(ctx) end
 end
 
+local function refreshPlayerInventory(ctx)
+    if not bridgeReady() then return end
+    state.inventoryGeneration = state.inventoryGeneration + 1
+    local generation = state.inventoryGeneration
+    send(ctx, "player_inventory", {}, function(ok, data, err)
+        if generation ~= state.inventoryGeneration then return end
+        if ok then
+            local slots = {}
+            for _, item in pairs(type(data) == "table" and data.slots or {}) do
+                local slot = tonumber(type(item) == "table" and item.slot)
+                if slot and item.name then slots[slot] = item end
+            end
+            state.playerSlots = slots
+            state.playerCapacity = tonumber(data and data.capacity) or 0
+            if state.selectedPlayerSlot and not slots[state.selectedPlayerSlot] then
+                state.selectedPlayerSlot = nil
+            end
+            if not state.selectedPlayerSlot then
+                for slot = 1, INVENTORY_COLUMNS * INVENTORY_ROWS do
+                    if slots[slot] then state.selectedPlayerSlot = slot break end
+                end
+            end
+        elseif state.view == "inventory" then
+            state.status = "ERROR"
+            state.statusDetail = tostring(err)
+            ctx.notify("Inventory: " .. tostring(err), ctx.config.theme.red)
+        end
+        refreshPanel(ctx)
+    end)
+end
+
 local function refresh(ctx, query)
     query = tostring(query == nil and state.query or query)
     if not state.serverId then
@@ -354,6 +485,7 @@ local function refresh(ctx, query)
     state.status = "SYNC"
     state.statusDetail = "Reading connected inventories..."
     refreshPanel(ctx)
+    refreshPlayerInventory(ctx)
     state.stockGeneration = state.stockGeneration + 1
     local generation = state.stockGeneration
     send(ctx, "stock", { query = query, limit = 128 }, function(ok, data, err)
@@ -368,7 +500,7 @@ local function refresh(ctx, query)
             end
             state.appliedQuery = query
             state.status = "ONLINE"
-            state.statusDetail = #state.rows == 0 and "Storage is empty" or nil
+            state.statusDetail = nil
         else
             state.status = "ERROR"
             state.statusDetail = tostring(err)
@@ -407,6 +539,11 @@ function app.start(ctx)
     state.pending = {}
     state.drawAt = nil
     state.widgets = nil
+    state.view = "storage"
+    state.playerSlots = {}
+    state.playerCapacity = 0
+    state.selectedPlayerSlot = nil
+    state.inventoryGeneration = 0
     ctx.services.provide("storage", {
         discover = function() return discover(ctx) end,
         status = function()
@@ -425,6 +562,12 @@ function app.start(ctx)
         end,
         depositHand = function(count, callback)
             return send(ctx, "deposit", { hand = true, count = count or 64 }, callback)
+        end,
+        playerInventory = function(callback)
+            return send(ctx, "player_inventory", {}, callback)
+        end,
+        depositSlot = function(slot, callback)
+            return send(ctx, "deposit", { slot = slot }, callback)
         end,
         craft = function(item, count, callback)
             return send(ctx, "craft", { name = item, count = count or 1 }, callback)
@@ -450,19 +593,83 @@ end
 local function transfer(ctx, operation, count)
     local item = selectedItem()
     if not item then return end
+    local requested = math.min(math.max(1, tonumber(count) or 1), item.count or 1)
+    if operation == "withdraw" then
+        state.stockGeneration = state.stockGeneration + 1
+        item.count = math.max(0, (item.count or 0) - requested)
+        if item.count == 0 then
+            table.remove(state.rows, state.selected)
+            state.selected = math.max(1, math.min(state.selected, #state.rows))
+        end
+    end
     state.status = operation == "craft" and "CRAFTING" or "DELIVERY"
     refreshPanel(ctx)
-    send(ctx, operation, { name = item.name, count = count }, function(ok, data, err)
+    send(ctx, operation, { name = item.name, count = requested }, function(ok, data, err)
         if ok then
             state.status = "ONLINE"
-            ctx.notify(("Storage %s: %s"):format(operation,
-                textutils.serialize(data or {})), ctx.config.theme.green)
+            local moved = tonumber(data and data.moved) or 0
+            local remaining = tonumber(data and data.remaining) or 0
+            if remaining > 0 then
+                ctx.notify(("Inventory full: moved %d/%d"):format(
+                    moved, tonumber(data and data.requested) or requested),
+                    ctx.config.theme.amber)
+            else
+                ctx.notify(("Received %d item(s)"):format(moved),
+                    ctx.config.theme.green)
+            end
             refresh(ctx)
         else
             state.status = "ERROR"
-            ctx.notify("Storage: " .. tostring(err), ctx.config.theme.red)
-            refreshPanel(ctx)
+            ctx.notify("Inventory full or transfer failed: " .. tostring(err),
+                ctx.config.theme.red)
+            refresh(ctx)
         end
+    end)
+end
+
+local function setView(ctx, view)
+    if view ~= "storage" and view ~= "inventory" then return end
+    state.view = view
+    state.searchActive = false
+    state.ignoreNextChar = false
+    if view == "inventory" then refreshPlayerInventory(ctx) end
+    refreshPanel(ctx)
+end
+
+local function depositPlayerSlot(ctx, slot)
+    slot = tonumber(slot)
+    local stack = slot and state.playerSlots[slot] or nil
+    if not stack then return end
+    local expectedName = stack.name
+    local expectedCount = tonumber(stack.count) or 0
+
+    -- Hide it immediately. The authoritative refresh below restores whatever
+    -- remained when a storage accepted only part of the stack.
+    state.inventoryGeneration = state.inventoryGeneration + 1
+    state.playerSlots[slot] = nil
+    state.selectedPlayerSlot = nil
+    state.status = "DEPOSIT"
+    refreshPanel(ctx)
+
+    send(ctx, "deposit", { slot = slot, name = expectedName }, function(ok, data, err)
+        if ok then
+            state.status = "ONLINE"
+            local moved = tonumber(data and data.moved) or 0
+            local requested = tonumber(data and data.requested) or expectedCount
+            local remaining = tonumber(data and data.remaining) or 0
+            if remaining > 0 then
+                ctx.notify(("Storage full: moved %d/%d"):format(moved, requested),
+                    ctx.config.theme.amber)
+            else
+                ctx.notify(("Deposited full stack: %d"):format(moved),
+                    ctx.config.theme.green)
+            end
+        else
+            state.status = "ERROR"
+            ctx.notify("Storage full or item rejected: " .. tostring(err),
+                ctx.config.theme.red)
+        end
+        refresh(ctx)
     end)
 end
 
@@ -483,16 +690,29 @@ local function movePointer(ctx, dx, dy)
     state.pointerY = util.clamp((state.pointerY or widgets.gridY) + dy,
         widgets.panelY + 3, widgets.panelY + widgets.panelH - 3)
 
-    local relativeX = state.pointerX - widgets.gridX
-    local relativeY = state.pointerY - widgets.gridY
-    local gridWidth = widgets.columns * widgets.slotSize
-    local gridHeight = widgets.gridRows * widgets.slotSize
-    if relativeX >= 0 and relativeX < gridWidth
-            and relativeY >= 0 and relativeY < gridHeight then
-        local column = math.floor(relativeX / widgets.slotSize)
-        local row = math.floor(relativeY / widgets.slotSize)
-        local index = state.offset + row * widgets.columns + column
-        if state.rows[index] then state.selected = index end
+    if state.view == "inventory" then
+        local relativeX = state.pointerX - widgets.inventoryGridX
+        local relativeY = state.pointerY - widgets.inventoryGridY
+        if relativeX >= 0 and relativeX < widgets.inventoryGridW
+                and relativeY >= 0 and relativeY < widgets.inventoryGridH then
+            local column = math.floor(relativeX / INVENTORY_SLOT_SIZE)
+            local row = math.floor(relativeY / INVENTORY_SLOT_SIZE)
+            local slot = playerSlotForCell(
+                row * INVENTORY_COLUMNS + column + 1)
+            if state.playerSlots[slot] then state.selectedPlayerSlot = slot end
+        end
+    else
+        local relativeX = state.pointerX - widgets.gridX
+        local relativeY = state.pointerY - widgets.gridY
+        local gridWidth = widgets.columns * widgets.slotSize
+        local gridHeight = widgets.gridRows * widgets.slotSize
+        if relativeX >= 0 and relativeX < gridWidth
+                and relativeY >= 0 and relativeY < gridHeight then
+            local column = math.floor(relativeX / widgets.slotSize)
+            local row = math.floor(relativeY / widgets.slotSize)
+            local index = state.offset + row * widgets.columns + column
+            if state.rows[index] then state.selected = index end
+        end
     end
     updatePanel(ctx)
 end
@@ -558,6 +778,7 @@ function app.onEvent(ctx, event, sender, message, protocol)
             movePointer(ctx, dx, dy)
             return true
         elseif event == "player_mouse_scroll" then
+            if state.view ~= "storage" then return true end
             local direction = tonumber(sender) or 1
             local currentPage = state.widgets
                 and math.floor((state.offset - 1) / state.widgets.pageSize) + 1 or 1
@@ -567,6 +788,32 @@ function app.onEvent(ctx, event, sender, message, protocol)
             -- AP reports mouse buttons as 1=left, 2=right, 3=middle.
             local button = tonumber(sender) or 1
             local widgets = state.widgets
+            if widgets and button == 1
+                    and pointerInside(widgets.storageTabX, widgets.storageTabY,
+                        widgets.storageTabW, widgets.storageTabH) then
+                setView(ctx, "storage")
+                return true
+            end
+            if widgets and button == 1
+                    and pointerInside(widgets.inventoryTabX, widgets.inventoryTabY,
+                        widgets.inventoryTabW, widgets.inventoryTabH) then
+                setView(ctx, "inventory")
+                return true
+            end
+            if widgets and state.view == "inventory"
+                    and pointerInside(widgets.inventoryGridX, widgets.inventoryGridY,
+                        widgets.inventoryGridW, widgets.inventoryGridH) then
+                local column = math.floor(
+                    (state.pointerX - widgets.inventoryGridX) / INVENTORY_SLOT_SIZE)
+                local row = math.floor(
+                    (state.pointerY - widgets.inventoryGridY) / INVENTORY_SLOT_SIZE)
+                local slot = playerSlotForCell(
+                    row * INVENTORY_COLUMNS + column + 1)
+                state.selectedPlayerSlot = slot
+                depositPlayerSlot(ctx, slot)
+                return true
+            end
+            if state.view ~= "storage" then return true end
             if widgets and button == 1
                     and pointerInside(widgets.searchX, widgets.searchY,
                     widgets.searchW, widgets.searchH) then
@@ -600,6 +847,11 @@ function app.onEvent(ctx, event, sender, message, protocol)
             return true
         elseif event == "key" and keys then
             local code = tonumber(sender)
+            if keys.i and code == keys.i then
+                setView(ctx, state.view == "storage" and "inventory" or "storage")
+                return true
+            end
+            if state.view ~= "storage" then return true end
             if state.searchActive then
                 if code == keys.backspace then
                     state.query = state.query:sub(1, math.max(0, #state.query - 1))
