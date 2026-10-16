@@ -10,7 +10,7 @@ local app = {
     persistent = false
 }
 
-local MIN_BRIDGE_VERSION = 4
+local MIN_BRIDGE_VERSION = 5
 local PANEL_SETTLE_MS = 180
 local DEFAULT_GRID_COLUMNS = 8
 local DEFAULT_GRID_ROWS = 4
@@ -136,7 +136,10 @@ local function sortedStock(stock)
     for _, item in pairs(stock or {}) do rows[#rows + 1] = item end
     table.sort(rows, function(a, b)
         if (a.count or 0) ~= (b.count or 0) then return (a.count or 0) > (b.count or 0) end
-        return (a.name or "") < (b.name or "")
+        if (a.name or "") ~= (b.name or "") then
+            return (a.name or "") < (b.name or "")
+        end
+        return tostring(a.variant or "") < tostring(b.variant or "")
     end)
     return rows
 end
@@ -172,6 +175,34 @@ local function readableItemLabel(item)
     return label
 end
 
+local ROMAN_LEVELS = {
+    [1] = "I", [2] = "II", [3] = "III", [4] = "IV", [5] = "V",
+    [6] = "VI", [7] = "VII", [8] = "VIII", [9] = "IX", [10] = "X"
+}
+
+local function enchantmentLabels(item)
+    local labels = {}
+    for _, enchantment in ipairs(type(item) == "table"
+            and type(item.enchantments) == "table" and item.enchantments or {}) do
+        local label = tostring(enchantment.displayName or "")
+        if label == "" or label:find("[\128-\255]") then
+            label = tostring(enchantment.name or "enchantment")
+                :gsub("^.+:", ""):gsub("_", " ")
+            local level = tonumber(enchantment.level) or 1
+            label = label .. " " .. (ROMAN_LEVELS[level] or tostring(level))
+        end
+        labels[#labels + 1] = label
+    end
+    return labels
+end
+
+local function itemSummary(item)
+    local label = readableItemLabel(item)
+    local enchantments = enchantmentLabels(item)
+    if #enchantments > 0 then label = label .. " | " .. table.concat(enchantments, ", ") end
+    return label
+end
+
 local function queueOperation(operation, item, count, payload, callback)
     state.transferSequence = state.transferSequence + 1
     local entry = {
@@ -179,6 +210,8 @@ local function queueOperation(operation, item, count, payload, callback)
         operation = operation,
         name = item and item.name or nil,
         label = item and readableItemLabel(item) or "held stack",
+        enchantments = item and item.enchantments or nil,
+        enchanted = item and item.enchanted == true or false,
         requested = math.max(1, tonumber(count) or 1),
         status = "queued",
         started = util.epoch(),
@@ -282,6 +315,7 @@ local function setCellGeometry(entry, x, y, size)
     objectCall(entry.item, "setPos", centerX, centerY, 80)
     objectCall(entry.fallback, "setPos", centerX - 3, centerY - 5, 81)
     objectCall(entry.count, "setPos", x + size - 11, y + size - 8, 83)
+    objectCall(entry.enchantBadge, "setPos", x + 3, y + 2, 85)
 end
 
 local function ensureVisible(pageSize)
@@ -355,8 +389,8 @@ local function updatePanel(ctx)
         and visibleQueue[state.hoveredQueueSlot] or nil
     setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
         hoveredQueued and util.short(
-            hoveredQueued.label .. "  " .. queueDetail(hoveredQueued), 50)
-            or util.short(readableItemLabel(labelItem), 34))
+            itemSummary(hoveredQueued) .. "  " .. queueDetail(hoveredQueued), 50)
+            or util.short(itemSummary(labelItem), 50))
     setCached(widgets, "storageTabColor", widgets.storageTab, "setColor",
         storageView and theme.white or theme.gray)
     setCached(widgets, "inventoryTabColor", widgets.inventoryTab, "setColor",
@@ -482,6 +516,8 @@ local function updatePanel(ctx)
                 entry.item and "" or "?")
             setCached(entry, "countText", entry.count, "setContent",
                 compactCount(item.count))
+            setCached(entry, "enchantText", entry.enchantBadge, "setContent",
+                item.enchanted and "E" or "")
         else
             setCached(entry, "backgroundOpacity", entry.background, "setOpacity",
                 active and (storageView and 0.36 or 0.30) or 0)
@@ -491,6 +527,40 @@ local function updatePanel(ctx)
             end
             setCached(entry, "fallbackText", entry.fallback, "setContent", "")
             setCached(entry, "countText", entry.count, "setContent", "")
+            setCached(entry, "enchantText", entry.enchantBadge, "setContent", "")
+        end
+    end
+
+    local tooltipItem = hoveredQueued or labelItem
+    local tooltipEnchantments = enchantmentLabels(tooltipItem)
+    local showTooltip = #tooltipEnchantments > 0 and state.pointerX and state.pointerY
+    setCached(widgets, "tooltipOpacity", widgets.tooltipBackground, "setOpacity",
+        showTooltip and 0.96 or 0)
+    setCached(widgets, "tooltipTitleText", widgets.tooltipTitle, "setContent",
+        showTooltip and util.short(readableItemLabel(tooltipItem), 30) or "")
+    if showTooltip then
+        local tooltipW, tooltipH = 150, 61
+        local tooltipX = util.clamp(state.pointerX + 8,
+            widgets.panelX + 3, widgets.panelX + widgets.panelW - tooltipW - 3)
+        local tooltipY = util.clamp(state.pointerY + 8,
+            widgets.panelY + 3, widgets.panelY + widgets.panelH - tooltipH - 3)
+        objectCall(widgets.tooltipBackground, "setPos",
+            tooltipX + tooltipW / 2, tooltipY + tooltipH / 2, 90)
+        objectCall(widgets.tooltipTitle, "setPos", tooltipX + 5, tooltipY + 5, 92)
+        for index, line in ipairs(widgets.tooltipLines) do
+            local content = tooltipEnchantments[index]
+            if index == #widgets.tooltipLines
+                    and #tooltipEnchantments > #widgets.tooltipLines then
+                content = "+" .. tostring(#tooltipEnchantments - index + 1) .. " more"
+            end
+            setCached(line, "content", line.object, "setContent",
+                content and util.short(content, 32) or "")
+            objectCall(line.object, "setPos", tooltipX + 6,
+                tooltipY + 15 + (index - 1) * 10, 93)
+        end
+    else
+        for _, line in ipairs(widgets.tooltipLines) do
+            setCached(line, "content", line.object, "setContent", "")
         end
     end
 
@@ -576,7 +646,9 @@ local function drawPanel(ctx)
             fallback = not okItem and ctx.ui.text(
                 iconX - 3, iconY - 5, "", theme.gray, 0.9, 79) or nil,
             count = ctx.ui.text(slotX + SLOT_SIZE - 13, slotY + SLOT_SIZE - 10,
-                "", theme.white, 0.58, 82)
+                "", theme.white, 0.58, 82),
+            enchantBadge = ctx.ui.text(slotX + 3, slotY + 2,
+                "", theme.purple, 0.54, 85, true)
         }
     end
     widgets.scrollTrack = ctx.ui.rectangle(scrollX - 1.5, gridY + 1,
@@ -618,6 +690,15 @@ local function drawPanel(ctx)
         "", theme.white, 0.72, 84)
     widgets.footer = ctx.ui.text(x + 9, y + panelH - 16,
         "L:take  R:stack  I:inventory", theme.gray, 0.60, 75)
+    widgets.tooltipBackground = ctx.ui.rectangle(
+        x, y, 150, 61, 0x090816, 0, 90)
+    widgets.tooltipTitle = ctx.ui.text(x, y, "", theme.white, 0.64, 92, true)
+    widgets.tooltipLines = {}
+    for index = 1, 4 do
+        widgets.tooltipLines[index] = {
+            object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
+        }
+    end
     widgets.cursorRing = ctx.ui.raw("Circle", {
         gui = true, x = gridX, y = gridY, z = 97, radius = 4.5,
         filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
@@ -830,7 +911,8 @@ local function transfer(ctx, operation, count)
     if not item then return end
     local requested = math.min(math.max(1, tonumber(count) or 1), item.count or 1)
     queueOperation(operation, item, requested,
-        { name = item.name, count = requested }, function(ok, data, err)
+        { name = item.name, variant = item.variant, count = requested },
+        function(ok, data, err)
         if ok then
             state.status = "ONLINE"
             local moved = tonumber(data and data.moved) or 0

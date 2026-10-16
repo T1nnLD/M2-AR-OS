@@ -26,19 +26,32 @@ local function normalizeStock(raw, query, limit)
                     (type(key) == "string" and key or nil),
                 displayName = value.displayName or value.label,
                 count = tonumber(value.count or value.amount or value.total) or 0,
-                craftable = value.craftable == true or value.isCraftable == true
+                craftable = value.craftable == true or value.isCraftable == true,
+                variant = value.variant,
+                enchantments = value.enchantments,
+                enchanted = value.enchanted == true
             }
         elseif type(key) == "string" then
             item = { name = key, count = tonumber(value) or 0 }
         end
         if item and item.name then
-            local haystack = (item.name .. " " .. (item.displayName or "")):lower()
+            local enchantmentSearch = {}
+            for _, enchantment in ipairs(type(item.enchantments) == "table"
+                    and item.enchantments or {}) do
+                enchantmentSearch[#enchantmentSearch + 1] = table.concat({
+                    tostring(enchantment.name or ""),
+                    tostring(enchantment.displayName or "")
+                }, " ")
+            end
+            local haystack = (item.name .. " " .. (item.displayName or "")
+                .. " " .. table.concat(enchantmentSearch, " ")):lower()
             if query == "" or haystack:find(query, 1, true) then items[#items + 1] = item end
         end
     end
     table.sort(items, function(a, b)
         if a.count ~= b.count then return a.count > b.count end
-        return a.name < b.name
+        if a.name ~= b.name then return a.name < b.name end
+        return tostring(a.variant or "") < tostring(b.variant or "")
     end)
     while #items > (limit or 256) do table.remove(items) end
     return items
@@ -168,23 +181,104 @@ local function locateInventories(config)
     return inventories, duplicateEndpoints, ignoredLocalInventories
 end
 
+local function normalizeEnchantments(detail)
+    local enchantments = {}
+    for _, enchantment in pairs(type(detail) == "table"
+            and type(detail.enchantments) == "table" and detail.enchantments or {}) do
+        if type(enchantment) == "table" then
+            enchantments[#enchantments + 1] = {
+                name = enchantment.name,
+                displayName = enchantment.displayName,
+                level = tonumber(enchantment.level) or 1
+            }
+        end
+    end
+    table.sort(enchantments, function(a, b)
+        return tostring(a.name or a.displayName) < tostring(b.name or b.displayName)
+    end)
+    return enchantments
+end
+
+local function itemVariant(stack, detail)
+    detail = type(detail) == "table" and detail or stack
+    local enchantments = normalizeEnchantments(detail)
+    local enchantmentParts = {}
+    for _, enchantment in ipairs(enchantments) do
+        enchantmentParts[#enchantmentParts + 1] = table.concat({
+            tostring(enchantment.name or enchantment.displayName or ""),
+            tostring(enchantment.level or 1)
+        }, "@")
+    end
+    return table.concat({
+        tostring(stack.name),
+        tostring(stack.nbt or ""),
+        tostring(detail.displayName or stack.displayName or stack.label or ""),
+        tostring(detail.damage or ""),
+        table.concat(enchantmentParts, ",")
+    }, "|"), enchantments
+end
+
+local function needsItemDetail(stack)
+    return type(stack) == "table"
+        and (stack.nbt ~= nil or (tonumber(stack.count) or 0) <= 1)
+end
+
 local function scanInventories(state)
+    state.itemDetailCache = state.itemDetailCache or {}
     local merged = {}
     for _, inventory in ipairs(state.inventories) do
         local ok, slots = pcall(inventory.peripheral.list)
         if ok and type(slots) == "table" then
-            for _, stack in pairs(slots) do
+            for slot, stack in pairs(slots) do
                 if type(stack) == "table" and stack.name then
-                    local item = merged[stack.name]
+                    local detail = stack
+                    -- Enchanted/damaged equipment is non-stackable. Query
+                    -- detailed data only for those stacks (or stacks with an
+                    -- NBT hash), otherwise a large Item Vault would require a
+                    -- costly peripheral call for every ordinary material.
+                    if needsItemDetail(stack)
+                            and type(inventory.peripheral.getItemDetail) == "function" then
+                        local cacheKey = inventory.name .. ":" .. tostring(slot)
+                        local signature = table.concat({
+                            tostring(stack.name), tostring(stack.count or 0),
+                            tostring(stack.nbt or "")
+                        }, "|")
+                        local cached = state.itemDetailCache[cacheKey]
+                        if cached and cached.signature == signature
+                                and util.epoch() - cached.time < 5000 then
+                            detail = cached.detail
+                        else
+                            local detailOk, value = pcall(
+                                inventory.peripheral.getItemDetail, slot)
+                            if detailOk and type(value) == "table" then detail = value end
+                            state.itemDetailCache[cacheKey] = {
+                                signature = signature, detail = detail,
+                                time = util.epoch()
+                            }
+                        end
+                    end
+
+                    local variant, enchantments = itemVariant(stack, detail)
+                    local item = merged[variant]
                     if not item then
                         item = {
+                            variant = variant,
                             name = stack.name,
-                            displayName = stack.displayName or stack.label,
-                            count = 0
+                            displayName = detail.displayName
+                                or stack.displayName or stack.label,
+                            count = 0,
+                            enchantments = enchantments,
+                            enchanted = #enchantments > 0,
+                            sources = {}
                         }
-                        merged[stack.name] = item
+                        merged[variant] = item
                     end
                     item.count = item.count + (tonumber(stack.count) or 0)
+                    item.sources[#item.sources + 1] = {
+                        inventory = inventory.name,
+                        slot = tonumber(slot),
+                        count = tonumber(stack.count) or 0
+                    }
                 end
             end
         end
@@ -213,11 +307,20 @@ local function playerInventory(manager)
     for key, stack in pairs(raw) do
         local slot = tonumber(key)
         if slot and type(stack) == "table" and stack.name then
+            local detail = stack
+            if type(manager.getItemDetail) == "function" then
+                local okDetail, value = pcall(manager.getItemDetail, slot)
+                if okDetail and type(value) == "table" then detail = value end
+            end
+            local enchantments = normalizeEnchantments(detail)
             slots[#slots + 1] = {
                 slot = slot,
                 name = stack.name,
-                displayName = stack.displayName or stack.label,
-                count = tonumber(stack.count) or 0
+                displayName = detail.displayName
+                    or stack.displayName or stack.label,
+                count = tonumber(stack.count) or 0,
+                enchantments = enchantments,
+                enchanted = #enchantments > 0
             }
             capacity = math.max(capacity, slot)
         end
@@ -442,8 +545,10 @@ local function handleRequest(state, sender, message)
             return
         end
         local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
+        local stock = scanInventories(state)
+        state.stockVariants = stock
         response(config, sender, message.id, true, {
-            items = normalizeStock(scanInventories(state), payload.query, limit),
+            items = normalizeStock(stock, payload.query, limit),
             inventories = #state.inventories,
             itemVaults = countInventoryKind(state.inventories, "item_vault")
         })
@@ -530,13 +635,63 @@ local function handleRequest(state, sender, message)
         end
         local count = math.max(1, math.floor(tonumber(payload.count) or 1))
         local moved, lastError = 0, nil
-        for _, inventory in ipairs(state.inventories) do
-            if moved >= count then break end
-            local ok, value = pcall(state.manager.importItem, inventory.name, {
-                name = payload.name, count = count - moved
-            })
-            if ok then moved = moved + movedAmount(value)
-            else lastError = value end
+        local variant = payload.variant
+            and state.stockVariants[payload.variant] or nil
+        if payload.variant and not variant then
+            response(config, sender, message.id, false, nil,
+                "item variant is stale; refresh storage and try again")
+            return
+        end
+        if variant then
+            for _, source in ipairs(variant.sources or {}) do
+                if moved >= count then break end
+                local sourcePeripheral
+                for _, inventory in ipairs(state.inventories) do
+                    if inventory.name == source.inventory then
+                        sourcePeripheral = inventory.peripheral
+                        break
+                    end
+                end
+                local matches, currentStack, currentDetail = false, nil, nil
+                if sourcePeripheral then
+                    local listOk, currentSlots = pcall(sourcePeripheral.list)
+                    currentStack = listOk and type(currentSlots) == "table"
+                        and currentSlots[source.slot] or nil
+                    matches = type(currentStack) == "table"
+                    currentDetail = currentStack
+                end
+                if matches and needsItemDetail(currentStack)
+                        and type(sourcePeripheral.getItemDetail) == "function" then
+                    local detailOk, detail = pcall(
+                        sourcePeripheral.getItemDetail, source.slot)
+                    if detailOk and type(detail) == "table" then
+                        currentDetail = detail
+                    else
+                        matches = false
+                    end
+                end
+                if matches then
+                    matches = itemVariant(currentStack, currentDetail) == payload.variant
+                end
+                if matches then
+                    local ok, value = pcall(state.manager.importItem,
+                        source.inventory, {
+                            name = payload.name, fromSlot = source.slot,
+                            count = count - moved
+                        })
+                    if ok then moved = moved + movedAmount(value)
+                    else lastError = value end
+                end
+            end
+        else
+            for _, inventory in ipairs(state.inventories) do
+                if moved >= count then break end
+                local ok, value = pcall(state.manager.importItem, inventory.name, {
+                    name = payload.name, count = count - moved
+                })
+                if ok then moved = moved + movedAmount(value)
+                else lastError = value end
+            end
         end
         if moved > 0 then
             response(config, sender, message.id, true, {
@@ -628,7 +783,8 @@ function Server.run(config)
         managerName = nil, inventories = {}, incompatibleInventories = {},
         discoveredInventoryCount = 0, inventoryIssue = nil,
         duplicateEndpoints = 0, ignoredLocalInventories = 0,
-        transactions = {}, lastMessage = nil
+        transactions = {}, lastMessage = nil,
+        itemDetailCache = {}, stockVariants = {}
     }
     refreshPeripherals(state)
     printStatus(state)
@@ -644,7 +800,7 @@ function Server.run(config)
                 state.lastMessage = ("#%d discover"):format(sender)
                 rednet.send(sender, {
                     kind = "hello", key = config.sharedKey,
-                    name = "M2OS Create Bridge", version = 4,
+                    name = "M2OS Create Bridge", version = 5,
                     inventories = #state.inventories,
                     detectedInventories = state.discoveredInventoryCount,
                     incompatibleInventories = #state.incompatibleInventories,

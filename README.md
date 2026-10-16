@@ -67,6 +67,13 @@ depositing up to 64 items matching the main-hand item. `C` requests one crafted
 item when optional Create crafting is enabled. Closing the Keyboard module
 closes the panel.
 
+The request bar at the bottom mirrors Create's Stock Keeper: queued transfers
+show native item icons, amounts and their current state. Enchanted and plain
+items are listed separately. Enchanted cells carry an `E` badge, and hovering
+them opens a tooltip with their enchantments. Bridge protocol v5 withdraws a
+selected variant from its exact inventory slot instead of matching only its
+registry name.
+
 ## Create storage bridge
 
 Use a second CC computer at the warehouse. It needs:
