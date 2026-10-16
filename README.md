@@ -76,6 +76,12 @@ burst of `getItemDetail` calls. A temporary `?` badge means that one of those
 batches is still being indexed. The selected variant is withdrawn from its
 exact inventory slot instead of matching only its registry name.
 
+The bridge stores compact indexed metadata in `/m2os/item_detail_cache.db`.
+The cache survives bridge and server restarts, is invalidated for changed
+inventory slots, and is revalidated after seven days by default. Configure or
+disable it with `itemDetailCacheFile` and `itemDetailCacheMaxAge` in
+`server_config.lua`.
+
 For localized item and enchantment names, install **CC: Tweaked Unicode
 Support** on both the Minecraft client and server. M2OS preserves its UTF-8
 output. Without that addon, names which have already degraded to `????` are

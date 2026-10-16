@@ -5,8 +5,11 @@ local Server = {}
 -- getItemDetail is a synchronous main-thread peripheral call. Calling it for
 -- dozens of one-count items in a large Create vault can trip the dedicated
 -- server watchdog, so detailed metadata is indexed in small bounded batches.
-local ITEM_DETAIL_CACHE_MS = 60000
 local ITEM_DETAIL_CALLS_PER_SCAN = 4
+local ITEM_DETAIL_CACHE_VERSION = 1
+local ITEM_DETAIL_CACHE_FILE = "/m2os/item_detail_cache.db"
+local ITEM_DETAIL_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+local ITEM_DETAIL_CACHE_SAVE_DELAY_MS = 1000
 
 local LOCAL_SIDES = {
     left = true, right = true, top = true, bottom = true,
@@ -225,6 +228,15 @@ local function itemVariant(stack, detail)
     }, "|"), enchantments
 end
 
+local function compactItemDetail(stack, detail)
+    detail = type(detail) == "table" and detail or stack
+    return {
+        displayName = detail.displayName or stack.displayName or stack.label,
+        damage = detail.damage or stack.damage,
+        enchantments = normalizeEnchantments(detail)
+    }
+end
+
 local ENCHANTABLE_NAME_SUFFIXES = {
     "_sword", "_pickaxe", "_axe", "_shovel", "_hoe",
     "_helmet", "_chestplate", "_leggings", "_boots",
@@ -260,17 +272,130 @@ local function sortedSlotIndexes(slots)
     return indexes
 end
 
+local function itemDetailCachePath(config)
+    if config.itemDetailCacheFile == false then return nil end
+    local path = tostring(config.itemDetailCacheFile or ITEM_DETAIL_CACHE_FILE)
+    return path ~= "" and path or ITEM_DETAIL_CACHE_FILE
+end
+
+local function itemStackSignature(stack)
+    if type(stack) ~= "table" or not stack.name then return nil end
+    return table.concat({
+        tostring(stack.name), tostring(stack.count or 0),
+        tostring(stack.nbt or "")
+    }, "|")
+end
+
+local function itemDetailCacheKey(inventoryName, slot)
+    return tostring(inventoryName) .. ":" .. tostring(slot)
+end
+
+local function loadItemDetailCache(config)
+    local path = itemDetailCachePath(config)
+    if not path then return {} end
+    local raw = util.readTable(path, {})
+    if raw.version ~= ITEM_DETAIL_CACHE_VERSION
+            or type(raw.entries) ~= "table" then return {} end
+    local entries = {}
+    for key, entry in pairs(raw.entries) do
+        if type(key) == "string" and type(entry) == "table"
+                and type(entry.signature) == "string"
+                and type(entry.detail) == "table"
+                and type(entry.inventory) == "string"
+                and tonumber(entry.slot) then
+            entries[key] = {
+                signature = entry.signature,
+                detail = entry.detail,
+                inventory = entry.inventory,
+                slot = tonumber(entry.slot),
+                time = tonumber(entry.time) or 0
+            }
+        end
+    end
+    return entries
+end
+
+local function markItemDetailCacheDirty(state)
+    state.itemDetailCacheDirty = true
+    state.itemDetailCacheSaveAt = util.epoch() + ITEM_DETAIL_CACHE_SAVE_DELAY_MS
+end
+
+local function saveItemDetailCache(state, force)
+    if not state.itemDetailCacheDirty then return true end
+    local now = util.epoch()
+    if not force and now < (state.itemDetailCacheSaveAt or now) then return true end
+    local path = itemDetailCachePath(state.config)
+    if not path then
+        state.itemDetailCacheDirty = false
+        return true
+    end
+    local parent = fs.getDir(path)
+    if parent ~= "" and not fs.exists(parent) then fs.makeDir(parent) end
+    local temp = path .. ".tmp"
+    local ok, err = util.writeTable(temp, {
+        version = ITEM_DETAIL_CACHE_VERSION,
+        savedAt = now,
+        entries = state.itemDetailCache
+    })
+    if not ok then
+        state.itemDetailCacheError = tostring(err or "cannot write cache")
+        state.itemDetailCacheSaveAt = now + 5000
+        return false
+    end
+    local moved, moveError = pcall(function()
+        if fs.exists(path) then fs.delete(path) end
+        fs.move(temp, path)
+    end)
+    if not moved then
+        state.itemDetailCacheError = tostring(moveError)
+        state.itemDetailCacheSaveAt = now + 5000
+        return false
+    end
+    state.itemDetailCacheDirty = false
+    state.itemDetailCacheSaveAt = nil
+    state.itemDetailCacheError = nil
+    return true
+end
+
+local function invalidateChangedItemDetails(state, inventory)
+    if not inventory then return end
+    local ok, slots = pcall(inventory.peripheral.list)
+    if not ok or type(slots) ~= "table" then return end
+    local changed = false
+    for key, cached in pairs(state.itemDetailCache or {}) do
+        if cached.inventory == inventory.name then
+            local current = slots[tonumber(cached.slot)]
+            if itemStackSignature(current) ~= cached.signature then
+                state.itemDetailCache[key] = nil
+                changed = true
+            end
+        end
+    end
+    if changed then markItemDetailCacheDirty(state) end
+end
+
+local function itemDetailCacheCount(state)
+    local count = 0
+    for _ in pairs(state.itemDetailCache or {}) do count = count + 1 end
+    return count
+end
+
 local function scanInventories(state)
     state.itemDetailCache = state.itemDetailCache or {}
     local merged = {}
     local detailCalls = 0
     local detailsPending = false
+    local seenCacheKeys = {}
+    local scannedInventories = {}
+    local maxCacheAge = tonumber(state.config.itemDetailCacheMaxAge)
+        or ITEM_DETAIL_CACHE_MAX_AGE_SECONDS
     local maxDetailCalls = math.max(1, math.min(
         tonumber(state.config.itemDetailCallsPerScan)
             or ITEM_DETAIL_CALLS_PER_SCAN, 8))
     for _, inventory in ipairs(state.inventories) do
         local ok, slots = pcall(inventory.peripheral.list)
         if ok and type(slots) == "table" then
+            scannedInventories[inventory.name] = true
             for _, slot in ipairs(sortedSlotIndexes(slots)) do
                 local stack = slots[slot]
                 if type(stack) == "table" and stack.name then
@@ -278,26 +403,28 @@ local function scanInventories(state)
                     local detailPending = false
                     if needsItemDetail(stack, state.config)
                             and type(inventory.peripheral.getItemDetail) == "function" then
-                        local cacheKey = inventory.name .. ":" .. tostring(slot)
-                        local signature = table.concat({
-                            tostring(stack.name), tostring(stack.count or 0),
-                            tostring(stack.nbt or "")
-                        }, "|")
+                        local cacheKey = itemDetailCacheKey(inventory.name, slot)
+                        local signature = itemStackSignature(stack)
+                        seenCacheKeys[cacheKey] = true
                         local cached = state.itemDetailCache[cacheKey]
                         if cached and cached.signature == signature
-                                and util.epoch() - cached.time < ITEM_DETAIL_CACHE_MS then
+                                and (maxCacheAge <= 0 or util.epoch() - cached.time
+                                    < maxCacheAge * 1000) then
                             detail = cached.detail
                         elseif detailCalls < maxDetailCalls then
                             detailCalls = detailCalls + 1
                             local detailOk, value = pcall(
                                 inventory.peripheral.getItemDetail, slot)
                             if detailOk and type(value) == "table" then detail = value end
+                            detail = compactItemDetail(stack, detail)
                             -- Cache failures as the basic stack too. Otherwise
                             -- an unsupported inventory would be retried forever.
                             state.itemDetailCache[cacheKey] = {
                                 signature = signature, detail = detail,
+                                inventory = inventory.name, slot = tonumber(slot),
                                 time = util.epoch()
                             }
+                            markItemDetailCacheDirty(state)
                         else
                             detailPending = true
                             detailsPending = true
@@ -331,6 +458,14 @@ local function scanInventories(state)
             end
         end
     end
+    local cachePruned = false
+    for key, cached in pairs(state.itemDetailCache) do
+        if scannedInventories[cached.inventory] and not seenCacheKeys[key] then
+            state.itemDetailCache[key] = nil
+            cachePruned = true
+        end
+    end
+    if cachePruned then markItemDetailCacheDirty(state) end
     return merged, detailsPending
 end
 
@@ -459,6 +594,13 @@ local function countInventoryKind(inventories, kind)
     return count
 end
 
+local function inventoryByName(state, name)
+    for _, inventory in ipairs(state.inventories or {}) do
+        if inventory.name == name then return inventory end
+    end
+    return nil
+end
+
 local function response(config, recipient, id, ok, data, err)
     rednet.send(recipient, {
         kind = "response", id = id, ok = ok, data = data,
@@ -549,6 +691,11 @@ local function printStatus(state)
     if (state.ignoredLocalInventories or 0) > 0 then
         print(("Ignored: %d side inventory; use wired name"):format(
             state.ignoredLocalInventories))
+    end
+    print(("Index:   %d cached%s"):format(itemDetailCacheCount(state),
+        state.itemDetailCacheDirty and " (saving)" or ""))
+    if state.itemDetailCacheError then
+        print("Cache:   " .. util.short(state.itemDetailCacheError, 38))
     end
     print("Pending: " .. tostring(#state.transactions))
     print("")
@@ -657,8 +804,13 @@ local function handleRequest(state, sender, message)
             local filter = { name = itemName, count = count - moved }
             if fromSlot then filter.fromSlot = fromSlot end
             local ok, value = pcall(state.manager.exportItem, inventory.name, filter)
-            if ok then moved = moved + movedAmount(value)
-            else lastError = value end
+            if ok then
+                local amount = movedAmount(value)
+                moved = moved + amount
+                if amount > 0 then invalidateChangedItemDetails(state, inventory) end
+            else
+                lastError = value
+            end
         end
         if moved > 0 then
             response(config, sender, message.id, true, {
@@ -695,13 +847,8 @@ local function handleRequest(state, sender, message)
         if variant then
             for _, source in ipairs(variant.sources or {}) do
                 if moved >= count then break end
-                local sourcePeripheral
-                for _, inventory in ipairs(state.inventories) do
-                    if inventory.name == source.inventory then
-                        sourcePeripheral = inventory.peripheral
-                        break
-                    end
-                end
+                local sourceInventory = inventoryByName(state, source.inventory)
+                local sourcePeripheral = sourceInventory and sourceInventory.peripheral
                 local matches, currentStack, currentDetail = false, nil, nil
                 if sourcePeripheral then
                     local listOk, currentSlots = pcall(sourcePeripheral.list)
@@ -729,8 +876,15 @@ local function handleRequest(state, sender, message)
                             name = payload.name, fromSlot = source.slot,
                             count = count - moved
                         })
-                    if ok then moved = moved + movedAmount(value)
-                    else lastError = value end
+                    if ok then
+                        local amount = movedAmount(value)
+                        moved = moved + amount
+                        if amount > 0 then
+                            invalidateChangedItemDetails(state, sourceInventory)
+                        end
+                    else
+                        lastError = value
+                    end
                 end
             end
         else
@@ -739,8 +893,13 @@ local function handleRequest(state, sender, message)
                 local ok, value = pcall(state.manager.importItem, inventory.name, {
                     name = payload.name, count = count - moved
                 })
-                if ok then moved = moved + movedAmount(value)
-                else lastError = value end
+                if ok then
+                    local amount = movedAmount(value)
+                    moved = moved + amount
+                    if amount > 0 then invalidateChangedItemDetails(state, inventory) end
+                else
+                    lastError = value
+                end
             end
         end
         if moved > 0 then
@@ -810,6 +969,10 @@ local function pollTransactions(state, now)
                 moved = tonumber(moved) or 0
                 tx.moved = tx.moved + moved
                 tx.remaining = math.max(0, tx.remaining - moved)
+                if moved > 0 then
+                    invalidateChangedItemDetails(state,
+                        inventoryByName(state, config.outputInventory))
+                end
             end
             if tx.remaining <= 0 then finished = true end
         end
@@ -834,7 +997,9 @@ function Server.run(config)
         discoveredInventoryCount = 0, inventoryIssue = nil,
         duplicateEndpoints = 0, ignoredLocalInventories = 0,
         transactions = {}, lastMessage = nil,
-        itemDetailCache = {}, stockVariants = {}
+        itemDetailCache = loadItemDetailCache(config),
+        itemDetailCacheDirty = false, itemDetailCacheSaveAt = nil,
+        itemDetailCacheError = nil, stockVariants = {}
     }
     refreshPeripherals(state)
     printStatus(state)
@@ -862,7 +1027,9 @@ function Server.run(config)
             end
             printStatus(state)
         elseif event[1] == "timer" and event[2] == timer then
-            pollTransactions(state, util.epoch())
+            local now = util.epoch()
+            pollTransactions(state, now)
+            saveItemDetailCache(state, false)
             printStatus(state)
             timer = os.startTimer(0.25)
         elseif event[1] == "peripheral" or event[1] == "peripheral_detach" then
@@ -870,6 +1037,7 @@ function Server.run(config)
             printStatus(state)
         end
     end
+    saveItemDetailCache(state, true)
     if rednet.isOpen(modemName) then rednet.close(modemName) end
     term.clear()
     term.setCursorPos(1, 1)

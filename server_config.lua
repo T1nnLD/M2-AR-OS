@@ -27,6 +27,13 @@ return {
     -- Keep this at 4 (8 is the hard safety limit).
     itemDetailCallsPerScan = 4,
 
+    -- Persistent compact metadata cache. It survives bridge restarts and is
+    -- invalidated when a slot's item/count/NBT signature changes. Entries are
+    -- periodically rechecked as protection against mods which hide NBT from
+    -- list(). Set max age to 0 to keep unchanged entries indefinitely.
+    itemDetailCacheFile = "/m2os/item_detail_cache.db",
+    itemDetailCacheMaxAge = 7 * 24 * 60 * 60,
+
     -- Optional registry-name fragments for unusual modded enchantable items.
     -- Example: "modid:laser_tool". Vanilla tools and common modded tool names
     -- are detected automatically.
