@@ -166,12 +166,21 @@ local function playerSlotForCell(cell)
     return cell - 27
 end
 
+local function unreadableLocalizedText(value)
+    value = tostring(value or "")
+    -- Depending on the AP/Minecraft version, unsupported localized glyphs
+    -- either arrive as UTF-8 or have already been replaced with question
+    -- marks before Lua sees them.
+    return value:find("[\128-\255]") ~= nil
+        or value:find("%?%?") ~= nil
+end
+
 local function readableItemLabel(item)
     if not item then return "" end
     local label = util.itemLabel(item)
     -- The bundled glasses font renders many localized glyphs as question
     -- marks. Registry paths are ASCII and remain readable for every item.
-    if label:find("[\128-\255]") then
+    if unreadableLocalizedText(label) then
         label = tostring(item.name or "item"):gsub("^.+:", ""):gsub("_", " ")
     end
     return label
@@ -187,7 +196,7 @@ local function enchantmentLabels(item)
     for _, enchantment in ipairs(type(item) == "table"
             and type(item.enchantments) == "table" and item.enchantments or {}) do
         local label = tostring(enchantment.displayName or "")
-        if label == "" or label:find("[\128-\255]") then
+        if label == "" or unreadableLocalizedText(label) then
             label = tostring(enchantment.name or "enchantment")
                 :gsub("^.+:", ""):gsub("_", " ")
             local level = tonumber(enchantment.level) or 1
