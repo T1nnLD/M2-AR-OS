@@ -42,6 +42,7 @@ local state = {
     widgets = nil,
     pointerX = nil,
     pointerY = nil,
+    pointerDirty = false,
     query = "",
     appliedQuery = "",
     searchActive = false,
@@ -326,9 +327,8 @@ local function updatePanel(ctx)
     end
 
     if state.pointerX and state.pointerY then
-        objectCall(widgets.cursorGlow, "setPos", state.pointerX, state.pointerY, 96)
         objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 97)
-        objectCall(widgets.cursorDot, "setPos", state.pointerX, state.pointerY, 98)
+        state.pointerDirty = false
     end
 end
 
@@ -416,17 +416,9 @@ local function drawPanel(ctx)
         "", theme.white, 0.72, 84)
     widgets.footer = ctx.ui.text(x + 9, y + panelH - 16,
         "L:take  R:stack  I:inventory", theme.gray, 0.60, 75)
-    widgets.cursorGlow = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 96, radius = 7,
-        filled = true, color = theme.purple, opacity = 0.16
-    })
     widgets.cursorRing = ctx.ui.raw("Circle", {
         gui = true, x = gridX, y = gridY, z = 97, radius = 4.5,
-        filled = false, borderWidth = 1.2, color = theme.white, opacity = 1
-    })
-    widgets.cursorDot = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 98, radius = 1.5,
-        filled = true, color = theme.purple, opacity = 1
+        filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
     })
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
@@ -518,6 +510,7 @@ local function togglePanel(ctx)
     state.drawAt = nil
     if state.panelOpen then
         state.pointerX, state.pointerY = nil, nil
+        state.pointerDirty = false
         state.searchActive = false
         state.ignoreNextChar = false
         -- KeyboardScreen reports its final GUI size a few ticks after opening.
@@ -714,15 +707,15 @@ local function movePointer(ctx, dx, dy)
             if state.rows[index] then state.selected = index end
         end
     end
-    updatePanel(ctx)
+    state.pointerDirty = true
 end
 
-local function numericArguments(...)
-    local out = {}
-    for _, value in ipairs({ ... }) do
-        if type(value) == "number" then out[#out + 1] = value end
-    end
-    return out
+local function mouseDelta(first, second, third)
+    local dx, dy
+    if type(first) == "number" then dx, dy = dy, first end
+    if type(second) == "number" then dx, dy = dy, second end
+    if type(third) == "number" then dx, dy = dy, third end
+    return dx or 0, dy or 0
 end
 
 local function pointerInside(x, y, width, height)
@@ -772,9 +765,7 @@ function app.onEvent(ctx, event, sender, message, protocol)
             end
             return true
         elseif event == "player_mouse_move" then
-            local values = numericArguments(sender, message, protocol)
-            local dx = values[#values - 1] or 0
-            local dy = values[#values] or 0
+            local dx, dy = mouseDelta(sender, message, protocol)
             movePointer(ctx, dx, dy)
             return true
         elseif event == "player_mouse_scroll" then
@@ -926,6 +917,9 @@ function app.onEvent(ctx, event, sender, message, protocol)
 end
 
 function app.update(ctx, now)
+    if state.panelOpen and state.pointerDirty and state.widgets then
+        updatePanel(ctx)
+    end
     if state.panelOpen and state.drawAt and now >= state.drawAt then
         state.drawAt = nil
         drawPanel(ctx)
@@ -948,6 +942,7 @@ function app.resize(ctx)
     ctx.ui.clear()
     state.widgets = nil
     state.pointerX, state.pointerY = nil, nil
+    state.pointerDirty = false
     -- Coalesce the resize burst emitted by KeyboardScreen and rebuild once at
     -- its final dimensions, matching the radial menu behaviour.
     state.drawAt = util.epoch() + PANEL_SETTLE_MS
@@ -961,6 +956,7 @@ function app.stop(ctx)
     state.searchAt = nil
     state.drawAt = nil
     state.widgets = nil
+    state.pointerDirty = false
 end
 
 api.registerApp(app)
