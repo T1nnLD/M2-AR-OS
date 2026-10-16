@@ -56,9 +56,10 @@ the mouse to select an item; the wheel changes whole pages, and the scrollbar
 can also be clicked. Click the search field or press `F` to type a registry-name
 filter. `Backspace` edits it, `Delete` clears it, and `Enter` applies it
 immediately (otherwise it applies after a short delay). Left click takes one,
-right click takes a stack, middle click deposits the held item, and `C` requests
-one crafted item when optional Create crafting is enabled. Closing the Keyboard
-module closes the panel.
+right click takes a stack, and middle click or `P` deposits up to 64 items of
+the type held in the player's main hand. `C` requests one crafted item when
+optional Create crafting is enabled. Closing the Keyboard module closes the
+panel.
 
 ## Create storage bridge
 

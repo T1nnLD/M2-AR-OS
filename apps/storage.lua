@@ -16,6 +16,7 @@ local DEFAULT_GRID_COLUMNS = 8
 local DEFAULT_GRID_ROWS = 4
 local SLOT_SIZE = 28
 local SEARCH_DELAY_MS = 300
+local STORAGE_MUTED = 0x344252
 
 local state = {
     modemName = nil,
@@ -186,7 +187,7 @@ local function updatePanel(ctx)
     setCached(widgets, "searchTextColor", widgets.searchText, "setColor",
         state.searchActive and theme.white or theme.gray)
     setCached(widgets, "searchBackgroundColor", widgets.searchBackground, "setColor",
-        state.searchActive and theme.purple or theme.blue)
+        state.searchActive and theme.purple or STORAGE_MUTED)
     setCached(widgets, "searchBackgroundOpacity", widgets.searchBackground,
         "setOpacity", state.searchActive and 0.48 or 0.24)
     setCached(widgets, "pageText", widgets.page, "setContent",
@@ -217,7 +218,7 @@ local function updatePanel(ctx)
         if item then
             local opacity = index == state.selected and 0.92 or 0.72
             setCached(entry, "backgroundColor", entry.background, "setColor",
-                index == state.selected and theme.purple or theme.blue)
+                index == state.selected and theme.purple or STORAGE_MUTED)
             setCached(entry, "backgroundOpacity", entry.background, "setOpacity", opacity)
             if entry.item and entry.itemName ~= item.name then
                 entry.itemName = item.name
@@ -277,12 +278,12 @@ local function drawPanel(ctx)
     -- can still blend with the world even at opacity=1 on some render paths.
     ctx.ui.rectangle(x, y, panelW, panelH, theme.background, 1, 70)
     ctx.ui.rectangle(x, y, panelW, 2, theme.purple, 1, 72)
-    ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, theme.blue, 1, 72)
+    ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, STORAGE_MUTED, 1, 72)
     ctx.ui.text(x + 9, y + 7, "M2OS STORAGE", theme.white, 1.05, 75)
     widgets.status = ctx.ui.text(x + panelW - 87, y + 8, state.status,
         theme.gray, 0.75, 75)
     widgets.searchBackground = ctx.ui.rectangle(
-        gridX, y + 22, gridW, 15, theme.blue, 0.24, 73)
+        gridX, y + 22, gridW, 15, STORAGE_MUTED, 0.52, 73)
     widgets.searchText = ctx.ui.text(
         gridX + 5, y + 25, "SEARCH... [F]", theme.gray, 0.66, 76)
     widgets.page = ctx.ui.text(x + panelW - 37, y + 26, "1/1", theme.gray, 0.65, 76)
@@ -299,7 +300,7 @@ local function drawPanel(ctx)
         })
         widgets.rows[visibleIndex] = {
             background = ctx.ui.rectangle(slotX, slotY, SLOT_SIZE - 2, SLOT_SIZE - 2,
-                theme.blue, 0.72, 73),
+                STORAGE_MUTED, 0.72, 73),
             item = okItem and itemObject or nil,
             fallback = not okItem and ctx.ui.text(
                 iconX - 3, iconY - 5, "", theme.gray, 0.9, 79) or nil,
@@ -314,7 +315,7 @@ local function drawPanel(ctx)
     widgets.selectedLabel = ctx.ui.text(x + 9, y + panelH - 31,
         "", theme.white, 0.72, 84)
     ctx.ui.text(x + 9, y + panelH - 16,
-        "L:take  R:stack  M:put hand  C:craft", theme.gray, 0.60, 75)
+        "L:take R:stack M/P:deposit C:craft", theme.gray, 0.60, 75)
     widgets.cursorGlow = ctx.ui.raw("Circle", {
         gui = true, x = gridX, y = gridY, z = 96, radius = 7,
         filled = true, color = theme.purple, opacity = 0.16
@@ -465,6 +466,15 @@ local function transfer(ctx, operation, count)
     end)
 end
 
+local function depositHand(ctx)
+    send(ctx, "deposit", { hand = true, count = 64 }, function(ok, data, err)
+        ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
+            or ("Deposit: " .. tostring(err)),
+            ok and ctx.config.theme.green or ctx.config.theme.red)
+        refresh(ctx)
+    end)
+end
+
 local function movePointer(ctx, dx, dy)
     local widgets = state.widgets
     if not widgets then return end
@@ -557,7 +567,8 @@ function app.onEvent(ctx, event, sender, message, protocol)
             -- AP reports mouse buttons as 1=left, 2=right, 3=middle.
             local button = tonumber(sender) or 1
             local widgets = state.widgets
-            if widgets and pointerInside(widgets.searchX, widgets.searchY,
+            if widgets and button == 1
+                    and pointerInside(widgets.searchX, widgets.searchY,
                     widgets.searchW, widgets.searchH) then
                 state.searchActive = true
                 state.ignoreNextChar = false
@@ -574,21 +585,18 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 selectPage(ctx, math.floor(ratio * totalPages) + 1)
                 return true
             end
+            if button == 3 then
+                state.searchActive = false
+                refreshPanel(ctx)
+                depositHand(ctx)
+                return true
+            end
             if not widgets or not pointerInside(widgets.gridX, widgets.gridY,
                     widgets.columns * widgets.slotSize,
                     widgets.gridRows * widgets.slotSize) then return true end
             state.searchActive = false
             refreshPanel(ctx)
-            if button == 3 then
-                send(ctx, "deposit", { hand = true, count = 64 }, function(ok, data, err)
-                    ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
-                        or ("Deposit: " .. tostring(err)),
-                        ok and ctx.config.theme.green or ctx.config.theme.red)
-                    refresh(ctx)
-                end)
-            else
-                transfer(ctx, "withdraw", button == 2 and 64 or 1)
-            end
+            transfer(ctx, "withdraw", button == 2 and 64 or 1)
             return true
         elseif event == "key" and keys then
             local code = tonumber(sender)
@@ -622,12 +630,7 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 transfer(ctx, "withdraw", 1) return true
             end
             if code == keys.p then
-                send(ctx, "deposit", { hand = true, count = 64 }, function(ok, data, err)
-                    ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
-                        or ("Deposit: " .. tostring(err)),
-                        ok and ctx.config.theme.green or ctx.config.theme.red)
-                    refresh(ctx)
-                end)
+                depositHand(ctx)
                 return true
             end
         elseif event == "keyboard_close"
