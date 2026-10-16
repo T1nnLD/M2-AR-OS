@@ -21,8 +21,8 @@ local INVENTORY_SLOT_SIZE = 24
 local CURSOR_FLUSH_INTERVAL_MS = 25
 local SEARCH_DELAY_MS = 300
 local STORAGE_MUTED = 0x344252
-local QUEUE_VISIBLE_ROWS = 4
-local QUEUE_HISTORY_LIMIT = 12
+local QUEUE_VISIBLE_ROWS = 9
+local QUEUE_HISTORY_LIMIT = 18
 local QUEUE_RESULT_LIFETIME_MS = 6000
 
 local state = {
@@ -48,6 +48,7 @@ local state = {
     pointerY = nil,
     pointerDirty = false,
     lastPointerFlush = 0,
+    hoveredQueueSlot = nil,
     query = "",
     appliedQuery = "",
     searchActive = false,
@@ -56,7 +57,8 @@ local state = {
     stockGeneration = 0,
     inventoryGeneration = 0,
     transferQueue = {},
-    transferSequence = 0
+    transferSequence = 0,
+    transferBusy = false
 }
 
 local function objectCall(object, method, ...)
@@ -170,7 +172,7 @@ local function readableItemLabel(item)
     return label
 end
 
-local function queueOperation(operation, item, count)
+local function queueOperation(operation, item, count, payload, callback)
     state.transferSequence = state.transferSequence + 1
     local entry = {
         id = state.transferSequence,
@@ -178,15 +180,18 @@ local function queueOperation(operation, item, count)
         name = item and item.name or nil,
         label = item and readableItemLabel(item) or "held stack",
         requested = math.max(1, tonumber(count) or 1),
-        status = "pending",
-        started = util.epoch()
+        status = "queued",
+        started = util.epoch(),
+        payload = payload,
+        callback = callback
     }
-    table.insert(state.transferQueue, 1, entry)
+    state.transferQueue[#state.transferQueue + 1] = entry
 
     while #state.transferQueue > QUEUE_HISTORY_LIMIT do
         local removed = false
-        for index = #state.transferQueue, 1, -1 do
-            if state.transferQueue[index].status ~= "pending" then
+        for index = 1, #state.transferQueue do
+            local status = state.transferQueue[index].status
+            if status ~= "pending" and status ~= "queued" then
                 table.remove(state.transferQueue, index)
                 removed = true
                 break
@@ -219,6 +224,9 @@ local function queueDetail(entry)
     local action = entry.operation == "withdraw" and "GET"
         or entry.operation == "deposit" and "PUT"
         or entry.operation == "craft" and "MAKE" or "DO"
+    if entry.status == "queued" then
+        return ("%s x%d  NEXT"):format(action, entry.requested)
+    end
     if entry.status == "pending" then
         return ("%s x%d  WAIT"):format(action, entry.requested)
     end
@@ -230,6 +238,26 @@ local function queueDetail(entry)
     end
     return ("%s x%d  DONE"):format(action, entry.moved or entry.requested)
 end
+
+local function visibleQueueEntries()
+    local visible = {}
+    for _, entry in ipairs(state.transferQueue) do
+        if entry.status == "queued" or entry.status == "pending" then
+            visible[#visible + 1] = entry
+            if #visible >= QUEUE_VISIBLE_ROWS then return visible end
+        end
+    end
+    for index = #state.transferQueue, 1, -1 do
+        local entry = state.transferQueue[index]
+        if entry.status ~= "queued" and entry.status ~= "pending" then
+            visible[#visible + 1] = entry
+            if #visible >= QUEUE_VISIBLE_ROWS then break end
+        end
+    end
+    return visible
+end
+
+local processTransferQueue
 
 local function pruneTransferQueue(now)
     local changed = false
@@ -288,6 +316,7 @@ local function updatePanel(ctx)
     setCached(widgets, "statusColor", widgets.status, "setColor", statusColor)
 
     local storageView = state.view == "storage"
+    local visibleQueue = visibleQueueEntries()
     local hasRows = storageView and #state.rows > 0
         or (not storageView and next(state.playerSlots) ~= nil)
     local emptyText = state.statusDetail
@@ -322,8 +351,12 @@ local function updatePanel(ctx)
         and state.playerSlots[state.selectedPlayerSlot] or nil
     local labelItem = storageView and selectedItem or nil
     if not storageView then labelItem = selectedPlayer end
+    local hoveredQueued = state.hoveredQueueSlot
+        and visibleQueue[state.hoveredQueueSlot] or nil
     setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
-        util.short(readableItemLabel(labelItem), 34))
+        hoveredQueued and util.short(
+            hoveredQueued.label .. "  " .. queueDetail(hoveredQueued), 50)
+            or util.short(readableItemLabel(labelItem), 34))
     setCached(widgets, "storageTabColor", widgets.storageTab, "setColor",
         storageView and theme.white or theme.gray)
     setCached(widgets, "inventoryTabColor", widgets.inventoryTab, "setColor",
@@ -339,31 +372,48 @@ local function updatePanel(ctx)
             or "CLICK: DEPOSIT FULL STACK  I:storage")
 
     if widgets.queueRows then
-        local hidden = math.max(0, #state.transferQueue - QUEUE_VISIBLE_ROWS)
+        local hidden = math.max(0, #state.transferQueue - #visibleQueue)
+        local waiting = 0
+        for _, queued in ipairs(state.transferQueue) do
+            if queued.status == "queued" or queued.status == "pending" then
+                waiting = waiting + 1
+            end
+        end
         setCached(widgets, "queueTitleText", widgets.queueTitle, "setContent",
-            hidden > 0 and ("QUEUE  +%d"):format(hidden) or "QUEUE")
+            ("REQUEST QUEUE  %d%s"):format(waiting,
+                hidden > 0 and ("  +" .. hidden) or ""))
         for index, row in ipairs(widgets.queueRows) do
-            local queued = state.transferQueue[index]
+            local queued = visibleQueue[index]
             if queued then
                 local queueColor = queued.status == "failed" and theme.red
                     or queued.status == "done" and theme.green
                     or theme.amber
                 setCached(row, "backgroundColor", row.background, "setColor", queueColor)
                 setCached(row, "backgroundOpacity", row.background, "setOpacity",
-                    queued.status == "pending" and 0.34 or 0.20)
-                setCached(row, "labelText", row.label, "setContent",
-                    util.short(queued.label, 16))
-                setCached(row, "labelColor", row.label, "setColor", theme.white)
-                setCached(row, "detailText", row.detail, "setContent", queueDetail(queued))
-                setCached(row, "detailColor", row.detail, "setColor", queueColor)
+                    (queued.status == "pending" or queued.status == "queued")
+                        and 0.42 or 0.24)
+                local shownCount = queued.status == "partial" and queued.moved
+                    or queued.status == "done" and queued.moved
+                    or queued.requested
+                setCached(row, "countText", row.count, "setContent",
+                    compactCount(shownCount))
+                setCached(row, "stateText", row.state, "setContent",
+                    queued.status == "pending" and "W"
+                        or queued.status == "queued" and ">"
+                        or queued.status == "done" and "+"
+                        or queued.status == "partial" and "~" or "!")
+                setCached(row, "stateColor", row.state, "setColor", queueColor)
                 if row.item and row.itemName ~= queued.name then
                     row.itemName = queued.name
                     objectCall(row.item, "setItem", queued.name)
                 end
+                setCached(row, "fallbackText", row.fallback, "setContent",
+                    row.item and "" or "?")
             else
                 setCached(row, "backgroundOpacity", row.background, "setOpacity", 0.12)
-                setCached(row, "labelText", row.label, "setContent", "")
-                setCached(row, "detailText", row.detail, "setContent", "")
+                setCached(row, "countText", row.count, "setContent", "")
+                setCached(row, "stateText", row.state, "setContent", "")
+                setCached(row, "fallbackText", row.fallback, "setContent", "")
                 if row.item and row.itemName ~= "" then
                     row.itemName = ""
                     objectCall(row.item, "setItem")
@@ -371,9 +421,9 @@ local function updatePanel(ctx)
             end
         end
     elseif state.transferQueue[1] then
-        local queued = state.transferQueue[1]
+        local queued = visibleQueue[1]
         setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
-            util.short("QUEUE: " .. queueDetail(queued) .. " " .. queued.label, 42))
+            util.short("QUEUE: " .. queueDetail(queued) .. " " .. queued.label, 50))
     end
 
     local trackHeight = widgets.gridRows * widgets.slotSize - 2
@@ -456,7 +506,7 @@ local function drawPanel(ctx)
     if not state.panelOpen or state.drawAt then return end
     local width, height = ctx.system.getSize()
     local theme = ctx.config.theme
-    local panelW, panelH = math.min(356, width - 30), math.min(204, height - 30)
+    local panelW, panelH = math.min(356, width - 30), math.min(232, height - 30)
     local x, y = (width - panelW) / 2, (height - panelH) / 2
     local columns = math.max(1, math.min(
         ctx.config.storage.gridColumns or DEFAULT_GRID_COLUMNS,
@@ -465,9 +515,8 @@ local function drawPanel(ctx)
         ctx.config.storage.gridRows or DEFAULT_GRID_ROWS,
         math.floor((panelH - 84) / SLOT_SIZE)))
     local gridW = columns * SLOT_SIZE
-    local showQueueSidebar = panelW >= gridW + 118
-    local gridX = showQueueSidebar and x + 10
-        or x + (panelW - gridW) / 2 - 3
+    local showQueueBar = panelH >= 218
+    local gridX = x + (panelW - gridW) / 2 - 3
     local gridY = y + 43
     local scrollX = gridX + gridW + 7
     local inventoryGridW = INVENTORY_COLUMNS * INVENTORY_SLOT_SIZE
@@ -487,9 +536,7 @@ local function drawPanel(ctx)
         inventoryTabX = x + 72, inventoryTabY = y + 4,
         inventoryTabW = 70, inventoryTabH = 17,
         storageTabCenter = x + 37, inventoryTabCenter = x + 107,
-        showQueueSidebar = showQueueSidebar,
-        queueX = gridX + gridW + 13,
-        queueW = x + panelW - 8 - (gridX + gridW + 13)
+        showQueueBar = showQueueBar
     }
     state.widgets = widgets
 
@@ -536,23 +583,34 @@ local function drawPanel(ctx)
         3, gridRows * SLOT_SIZE - 2, theme.gray, 0.22, 75)
     widgets.scrollThumb = ctx.ui.rectangle(scrollX - 1.5, gridY + 1,
         3, 12, theme.purple, 0.95, 79)
-    if showQueueSidebar then
+    if showQueueBar then
         widgets.queueRows = {}
-        widgets.queueTitle = ctx.ui.text(widgets.queueX, gridY,
-            "QUEUE", theme.gray, 0.62, 80)
+        local queueSlotSize = 24
+        local queueWidth = QUEUE_VISIBLE_ROWS * queueSlotSize
+        local queueX = x + (panelW - queueWidth) / 2
+        local queueY = gridY + gridRows * SLOT_SIZE + 13
+        widgets.queueX = queueX
+        widgets.queueY = queueY
+        widgets.queueSlotSize = queueSlotSize
+        widgets.queueWidth = queueWidth
+        widgets.queueTitle = ctx.ui.text(queueX, queueY - 10,
+            "REQUEST QUEUE  0", theme.gray, 0.53, 80)
         for index = 1, QUEUE_VISIBLE_ROWS do
-            local rowY = gridY + 13 + (index - 1) * 25
+            local slotX = queueX + (index - 1) * queueSlotSize
             local okItem, itemObject = pcall(ctx.ui.raw, "Item", {
-                gui = true, x = widgets.queueX + 10, y = rowY + 10, z = 82
+                gui = true, x = slotX + 11, y = queueY + 11, z = 82
             })
             widgets.queueRows[index] = {
-                background = ctx.ui.rectangle(widgets.queueX, rowY,
-                    widgets.queueW, 22, STORAGE_MUTED, 0.12, 76),
+                background = ctx.ui.rectangle(slotX, queueY,
+                    queueSlotSize - 2, queueSlotSize - 2,
+                    STORAGE_MUTED, 0.12, 76),
                 item = okItem and itemObject or nil,
-                label = ctx.ui.text(widgets.queueX + 21, rowY + 3,
-                    "", theme.white, 0.51, 84),
-                detail = ctx.ui.text(widgets.queueX + 21, rowY + 12,
-                    "", theme.gray, 0.45, 84)
+                fallback = not okItem and ctx.ui.text(
+                    slotX + 8, queueY + 5, "", theme.gray, 0.8, 83) or nil,
+                state = ctx.ui.text(slotX + 2, queueY + 2,
+                    "", theme.gray, 0.48, 85),
+                count = ctx.ui.text(slotX + queueSlotSize - 11,
+                    queueY + queueSlotSize - 9, "", theme.white, 0.54, 85)
             }
         end
     end
@@ -646,6 +704,40 @@ local function refresh(ctx, query)
     end)
 end
 
+processTransferQueue = function(ctx)
+    if state.transferBusy then return true end
+    local queued
+    for _, entry in ipairs(state.transferQueue) do
+        if entry.status == "queued" then
+            queued = entry
+            break
+        end
+    end
+    if not queued then return false end
+
+    state.transferBusy = true
+    queued.status = "pending"
+    refreshPanel(ctx)
+    send(ctx, queued.operation, queued.payload, function(ok, data, err)
+        finishQueueOperation(queued, ok, data, err)
+        if queued.callback then
+            local callbackOk, callbackError = pcall(queued.callback, ok, data, err)
+            if not callbackOk then
+                queued.status = "failed"
+                queued.error = tostring(callbackError)
+                ctx.notify("Queue callback: " .. tostring(callbackError),
+                    ctx.config.theme.red)
+            end
+        end
+        queued.callback = nil
+        queued.payload = nil
+        state.transferBusy = false
+        refreshPanel(ctx)
+        if not processTransferQueue(ctx) then refresh(ctx) end
+    end)
+    return true
+end
+
 local function togglePanel(ctx)
     state.panelOpen = not state.panelOpen
     ctx.system.setInputMode(state.panelOpen and "storage" or nil)
@@ -656,6 +748,7 @@ local function togglePanel(ctx)
         state.pointerX, state.pointerY = nil, nil
         state.pointerDirty = false
         state.lastPointerFlush = 0
+        state.hoveredQueueSlot = nil
         state.searchActive = false
         state.ignoreNextChar = false
         -- KeyboardScreen reports its final GUI size a few ticks after opening.
@@ -677,6 +770,7 @@ function app.start(ctx)
     state.pending = {}
     state.drawAt = nil
     state.widgets = nil
+    state.hoveredQueueSlot = nil
     state.view = "storage"
     state.playerSlots = {}
     state.playerCapacity = 0
@@ -684,6 +778,7 @@ function app.start(ctx)
     state.inventoryGeneration = 0
     state.transferQueue = {}
     state.transferSequence = 0
+    state.transferBusy = false
     ctx.services.provide("storage", {
         discover = function() return discover(ctx) end,
         status = function()
@@ -734,19 +829,8 @@ local function transfer(ctx, operation, count)
     local item = selectedItem()
     if not item then return end
     local requested = math.min(math.max(1, tonumber(count) or 1), item.count or 1)
-    local queued = queueOperation(operation, item, requested)
-    if operation == "withdraw" then
-        state.stockGeneration = state.stockGeneration + 1
-        item.count = math.max(0, (item.count or 0) - requested)
-        if item.count == 0 then
-            table.remove(state.rows, state.selected)
-            state.selected = math.max(1, math.min(state.selected, #state.rows))
-        end
-    end
-    state.status = operation == "craft" and "CRAFTING" or "DELIVERY"
-    refreshPanel(ctx)
-    send(ctx, operation, { name = item.name, count = requested }, function(ok, data, err)
-        finishQueueOperation(queued, ok, data, err)
+    queueOperation(operation, item, requested,
+        { name = item.name, count = requested }, function(ok, data, err)
         if ok then
             state.status = "ONLINE"
             local moved = tonumber(data and data.moved) or 0
@@ -759,14 +843,23 @@ local function transfer(ctx, operation, count)
                 ctx.notify(("Received %d item(s)"):format(moved),
                     ctx.config.theme.green)
             end
-            refresh(ctx)
         else
             state.status = "ERROR"
             ctx.notify("Inventory full or transfer failed: " .. tostring(err),
                 ctx.config.theme.red)
-            refresh(ctx)
         end
     end)
+    if operation == "withdraw" then
+        state.stockGeneration = state.stockGeneration + 1
+        item.count = math.max(0, (item.count or 0) - requested)
+        if item.count == 0 then
+            table.remove(state.rows, state.selected)
+            state.selected = math.max(1, math.min(state.selected, #state.rows))
+        end
+    end
+    state.status = operation == "craft" and "CRAFTING" or "DELIVERY"
+    refreshPanel(ctx)
+    processTransferQueue(ctx)
 end
 
 local function setView(ctx, view)
@@ -784,18 +877,8 @@ local function depositPlayerSlot(ctx, slot)
     if not stack then return end
     local expectedName = stack.name
     local expectedCount = tonumber(stack.count) or 0
-    local queued = queueOperation("deposit", stack, expectedCount)
-
-    -- Hide it immediately. The authoritative refresh below restores whatever
-    -- remained when a storage accepted only part of the stack.
-    state.inventoryGeneration = state.inventoryGeneration + 1
-    state.playerSlots[slot] = nil
-    state.selectedPlayerSlot = nil
-    state.status = "DEPOSIT"
-    refreshPanel(ctx)
-
-    send(ctx, "deposit", { slot = slot, name = expectedName }, function(ok, data, err)
-        finishQueueOperation(queued, ok, data, err)
+    queueOperation("deposit", stack, expectedCount,
+        { slot = slot, name = expectedName }, function(ok, data, err)
         if ok then
             state.status = "ONLINE"
             local moved = tonumber(data and data.moved) or 0
@@ -813,20 +896,27 @@ local function depositPlayerSlot(ctx, slot)
             ctx.notify("Storage full or item rejected: " .. tostring(err),
                 ctx.config.theme.red)
         end
-        refresh(ctx)
     end)
+
+    -- Hide it immediately. The authoritative refresh below restores whatever
+    -- remained when a storage accepted only part of the stack.
+    state.inventoryGeneration = state.inventoryGeneration + 1
+    state.playerSlots[slot] = nil
+    state.selectedPlayerSlot = nil
+    state.status = "DEPOSIT"
+    refreshPanel(ctx)
+    processTransferQueue(ctx)
 end
 
 local function depositHand(ctx)
-    local queued = queueOperation("deposit", nil, 64)
-    refreshPanel(ctx)
-    send(ctx, "deposit", { hand = true, count = 64 }, function(ok, data, err)
-        finishQueueOperation(queued, ok, data, err)
+    queueOperation("deposit", nil, 64, { hand = true, count = 64 },
+        function(ok, data, err)
         ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
             or ("Deposit: " .. tostring(err)),
             ok and ctx.config.theme.green or ctx.config.theme.red)
-        refresh(ctx)
     end)
+    refreshPanel(ctx)
+    processTransferQueue(ctx)
 end
 
 local function movePointer(ctx, dx, dy)
@@ -836,6 +926,16 @@ local function movePointer(ctx, dx, dy)
         widgets.panelX + 3, widgets.panelX + widgets.panelW - 3)
     state.pointerY = util.clamp((state.pointerY or widgets.gridY) + dy,
         widgets.panelY + 3, widgets.panelY + widgets.panelH - 3)
+
+    state.hoveredQueueSlot = nil
+    if widgets.queueRows
+            and state.pointerX >= widgets.queueX
+            and state.pointerX < widgets.queueX + widgets.queueWidth
+            and state.pointerY >= widgets.queueY
+            and state.pointerY < widgets.queueY + widgets.queueSlotSize then
+        state.hoveredQueueSlot = math.floor(
+            (state.pointerX - widgets.queueX) / widgets.queueSlotSize) + 1
+    end
 
     if state.view == "inventory" then
         local relativeX = state.pointerX - widgets.inventoryGridX
@@ -1105,6 +1205,7 @@ function app.resize(ctx)
     state.pointerX, state.pointerY = nil, nil
     state.pointerDirty = false
     state.lastPointerFlush = 0
+    state.hoveredQueueSlot = nil
     -- Coalesce the resize burst emitted by KeyboardScreen and rebuild once at
     -- its final dimensions, matching the radial menu behaviour.
     state.drawAt = util.epoch() + PANEL_SETTLE_MS
@@ -1120,6 +1221,7 @@ function app.stop(ctx)
     state.widgets = nil
     state.pointerDirty = false
     state.lastPointerFlush = 0
+    state.hoveredQueueSlot = nil
 end
 
 api.registerApp(app)
