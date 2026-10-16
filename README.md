@@ -66,11 +66,12 @@ panel.
 Use a second CC computer at the warehouse. It needs:
 
 1. a Wireless/Ender Modem;
-2. a wired modem network connected to the storage inventories;
+2. one common wired modem network connected to both the Inventory Manager and
+   all storage inventories;
 3. an Advanced Peripherals Inventory Manager with a Memory Card bound to the
    same player (required for transfer directly to/from the player);
-4. wired modems on the chests, barrels, Item Vaults or other inventories that
-   should be included.
+4. activated wired modems on the Inventory Manager and on the chests, barrels,
+   Item Vaults or other inventories that should be included.
 
 Copy the `m2os` directory and `m2os_server.lua` to that computer, then edit
 `m2os/server_config.lua`. The bridge automatically discovers every accessible
@@ -91,10 +92,16 @@ an intermediate output chest.
 Storage must have a stable wired-network peripheral name such as
 `create:item_vault_0`, not a local side alias such as `left` or `right`. Attach
 an activated wired modem directly to the storage and connect it by networking
-cable to the bridge computer. Side aliases are ignored by default because
-Inventory Manager cannot reliably address them for player transfers. The
-bridge reports ignored local inventories on its status screen. This guard is
-controlled by `requireNamedInventories` in `server_config.lua`.
+cable to the bridge computer. Do the same for the Inventory Manager and join
+both modems with that exact same cable network. Merely attaching the Manager to
+the side of the computer is not sufficient: Advanced Peripherals resolves a
+transfer target only inside the wired network through which the Manager itself
+is connected. Side aliases are ignored by default because Inventory Manager
+cannot reliably address them for player transfers. The bridge checks every
+target with a zero-item transfer, reports `usable / found` on its status screen,
+and rejects cross-network storage with a clear message instead of attempting a
+real transfer. This guard is controlled by `requireNamedInventories` in
+`server_config.lua`.
 
 Create Item Vaults are detected explicitly. Attach and activate a wired modem
 on any block of each assembled Vault; Create forwards that connection to the

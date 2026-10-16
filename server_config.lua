@@ -10,10 +10,10 @@ return {
         -- "minecraft:furnace_0"
     },
 
-    -- Only inventories with stable wired-network names such as
-    -- minecraft:chest_0 or create:item_vault_0 may be used for transfers.
-    -- Local aliases (left/right/front/...) are ignored because Inventory
-    -- Manager cannot address them reliably from the wired network.
+    -- The Inventory Manager and every storage must have stable wired-network
+    -- names and be connected to the same cable network. Local aliases
+    -- (left/right/front/...) are ignored because the Manager cannot address
+    -- them reliably from another peripheral connection.
     requireNamedInventories = true,
 
     -- A multiblock Item Vault can appear once for every wired modem attached

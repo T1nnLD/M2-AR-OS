@@ -50,8 +50,20 @@ local function locateTicker()
 end
 
 local function locateManager()
-    return util.findPeripheral({ "importItem", "exportItem" },
-        { "inventoryManager", "inventory_manager" })
+    local sideManager, sideName
+    for _, name in ipairs(peripheral.getNames()) do
+        local wrapped = peripheral.wrap(name)
+        if wrapped and type(wrapped.importItem) == "function"
+                and type(wrapped.exportItem) == "function" then
+            -- Prefer the stable name supplied by a wired modem. A manager
+            -- mounted directly on a computer side is still accepted, but it
+            -- cannot normally see inventories living on another modem
+            -- attachment/network.
+            if not LOCAL_SIDES[name] then return wrapped, name end
+            sideManager, sideName = wrapped, name
+        end
+    end
+    return sideManager, sideName
 end
 
 local function isExcluded(config, name)
@@ -187,11 +199,77 @@ local function movedAmount(value)
     return tonumber(value) or 0
 end
 
+local function classifyInventoryError(value)
+    local message = tostring(value or "unknown Inventory Manager error")
+    local lower = message:lower()
+    if lower:find("does not exist", 1, true) then
+        return "different_network", message
+    elseif lower:find("memory card", 1, true)
+            or lower:find("bound to a player", 1, true) then
+        return "manager_owner", message
+    elseif lower:find("disabled in the config", 1, true) then
+        return "transfers_disabled", message
+    elseif lower:find("not an inventory", 1, true) then
+        return "unsupported_inventory", message
+    end
+    return "manager_error", message
+end
+
+-- Inventory Manager resolves target names through the peripheral connection
+-- on which the method was called. peripheral.getNames() can also contain
+-- inventories from a second wired network attached to the same computer. A
+-- zero-count import resolves the target without moving an item, so it is a
+-- safe compatibility probe for Advanced Peripherals 0.8.2a.
+local function compatibleInventories(manager, inventories)
+    if not manager then return inventories, {}, nil end
+    local compatible, rejected, issue = {}, {}, nil
+    for _, inventory in ipairs(inventories) do
+        local ok, value = pcall(manager.importItem, inventory.name, { count = 0 })
+        if ok then
+            compatible[#compatible + 1] = inventory
+        else
+            local kind, message = classifyInventoryError(value)
+            rejected[#rejected + 1] = {
+                name = inventory.name, issue = kind, error = message
+            }
+            issue = issue or kind
+        end
+    end
+    return compatible, rejected, issue
+end
+
+local function refreshInventories(state)
+    local discovered
+    discovered, state.duplicateEndpoints, state.ignoredLocalInventories
+        = locateInventories(state.config)
+    state.discoveredInventoryCount = #discovered
+    state.inventories, state.incompatibleInventories, state.inventoryIssue
+        = compatibleInventories(state.manager, discovered)
+end
+
+local function noInventoryError(state)
+    if #(state.incompatibleInventories or {}) > 0 then
+        if state.inventoryIssue == "different_network" then
+            return "storage and Inventory Manager are on different wired networks; connect both to the same cable"
+        elseif state.inventoryIssue == "manager_owner" then
+            return "Inventory Manager has no bound player; insert a bound Memory Card and keep that player online"
+        elseif state.inventoryIssue == "transfers_disabled" then
+            return "item transfer is disabled in the Advanced Peripherals server config"
+        elseif state.inventoryIssue == "unsupported_inventory" then
+            return "the connected storage can be listed but Inventory Manager cannot transfer items to it"
+        end
+        return "Inventory Manager cannot access the connected storage"
+    end
+    if (state.ignoredLocalInventories or 0) > 0 then
+        return "only side inventories found; connect storage through an active wired modem"
+    end
+    return "no named wired inventories found"
+end
+
 local function refreshPeripherals(state)
     state.ticker = locateTicker()
-    state.manager = locateManager()
-    state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
-        = locateInventories(state.config)
+    state.manager, state.managerName = locateManager()
+    refreshInventories(state)
 end
 
 local function countInventoryKind(inventories, kind)
@@ -275,9 +353,16 @@ local function printStatus(state)
     print("Modem:   " .. (state.modemName or "NOT FOUND"))
     print("Ticker:  " .. (state.ticker and "ONLINE"
         or (state.config.enableCreateCrafting and "NOT FOUND" or "OPTIONAL")))
-    print("Manager: " .. (state.manager and "ONLINE" or "NOT FOUND"))
-    print(("Storage: %d inventories (%d vaults)"):format(
-        #state.inventories, countInventoryKind(state.inventories, "item_vault")))
+    print("Manager: " .. (state.manager
+        and ("ONLINE (%s)"):format(state.managerName or "unknown")
+        or "NOT FOUND"))
+    print(("Storage: %d usable / %d found (%d vaults)"):format(
+        #state.inventories, state.discoveredInventoryCount or #state.inventories,
+        countInventoryKind(state.inventories, "item_vault")))
+    if #(state.incompatibleInventories or {}) > 0 then
+        print(("Blocked: %d; not on Manager wired network"):format(
+            #state.incompatibleInventories))
+    end
     if (state.duplicateEndpoints or 0) > 0 then
         print(("Aliases: %d duplicate vault endpoint(s) ignored"):format(
             state.duplicateEndpoints))
@@ -313,13 +398,9 @@ local function handleRequest(state, sender, message)
             createCrafting = config.enableCreateCrafting == true
         })
     elseif operation == "stock" then
-        state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
-            = locateInventories(config)
+        refreshInventories(state)
         if #state.inventories == 0 then
-            local err = (state.ignoredLocalInventories or 0) > 0
-                and "only side inventories found; connect storage through an active wired modem"
-                or "no named wired inventories found"
-            response(config, sender, message.id, false, nil, err)
+            response(config, sender, message.id, false, nil, noInventoryError(state))
             return
         end
         local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
@@ -333,13 +414,9 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "Inventory Manager not found")
             return
         end
-        state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
-            = locateInventories(config)
+        refreshInventories(state)
         if #state.inventories == 0 then
-            local err = (state.ignoredLocalInventories or 0) > 0
-                and "only side inventories found; connect storage through an active wired modem"
-                or "no named wired inventories found"
-            response(config, sender, message.id, false, nil, err)
+            response(config, sender, message.id, false, nil, noInventoryError(state))
             return
         end
         local count = math.max(1, math.floor(tonumber(payload.count) or 1))
@@ -378,13 +455,9 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "item name is required")
             return
         end
-        state.inventories, state.duplicateEndpoints, state.ignoredLocalInventories
-            = locateInventories(config)
+        refreshInventories(state)
         if #state.inventories == 0 then
-            local err = (state.ignoredLocalInventories or 0) > 0
-                and "only side inventories found; connect storage through an active wired modem"
-                or "no named wired inventories found"
-            response(config, sender, message.id, false, nil, err)
+            response(config, sender, message.id, false, nil, noInventoryError(state))
             return
         end
         local count = math.max(1, math.floor(tonumber(payload.count) or 1))
@@ -484,7 +557,9 @@ function Server.run(config)
 
     local state = {
         config = config, modemName = modemName, ticker = nil, manager = nil,
-        inventories = {}, duplicateEndpoints = 0, ignoredLocalInventories = 0,
+        managerName = nil, inventories = {}, incompatibleInventories = {},
+        discoveredInventoryCount = 0, inventoryIssue = nil,
+        duplicateEndpoints = 0, ignoredLocalInventories = 0,
         transactions = {}, lastMessage = nil
     }
     refreshPeripherals(state)
@@ -503,6 +578,8 @@ function Server.run(config)
                     kind = "hello", key = config.sharedKey,
                     name = "M2OS Create Bridge", version = 3,
                     inventories = #state.inventories,
+                    detectedInventories = state.discoveredInventoryCount,
+                    incompatibleInventories = #state.incompatibleInventories,
                     itemVaults = countInventoryKind(state.inventories, "item_vault"),
                     ignoredLocalInventories = state.ignoredLocalInventories or 0
                 }, config.protocol)
