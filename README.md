@@ -76,6 +76,11 @@ burst of `getItemDetail` calls. A temporary `?` badge means that one of those
 batches is still being indexed. The selected variant is withdrawn from its
 exact inventory slot instead of matching only its registry name.
 
+For localized item and enchantment names, install **CC: Tweaked Unicode
+Support** on both the Minecraft client and server. M2OS preserves its UTF-8
+output. Without that addon, names which have already degraded to `????` are
+shown using their readable registry IDs instead.
+
 ## Create storage bridge
 
 Use a second CC computer at the warehouse. It needs:

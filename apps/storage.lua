@@ -168,11 +168,10 @@ end
 
 local function unreadableLocalizedText(value)
     value = tostring(value or "")
-    -- Depending on the AP/Minecraft version, unsupported localized glyphs
-    -- either arrive as UTF-8 or have already been replaced with question
-    -- marks before Lua sees them.
-    return value:find("[\128-\255]") ~= nil
-        or value:find("%?%?") ~= nil
+    -- CC: Tweaked Unicode Support preserves valid UTF-8 and Advanced
+    -- Peripherals' Text object already decodes it. Only fall back when the
+    -- text was irreversibly replaced before Lua received it.
+    return value:find("%?%?") ~= nil
 end
 
 local function readableItemLabel(item)
