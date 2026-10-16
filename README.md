@@ -70,9 +70,11 @@ closes the panel.
 The request bar at the bottom mirrors Create's Stock Keeper: queued transfers
 show native item icons, amounts and their current state. Enchanted and plain
 items are listed separately. Enchanted cells carry an `E` badge, and hovering
-them opens a tooltip with their enchantments. Bridge protocol v5 withdraws a
-selected variant from its exact inventory slot instead of matching only its
-registry name.
+them opens a tooltip with their enchantments. Bridge protocol v6 indexes item
+metadata in bounded batches, so large Create vaults cannot cause an unbounded
+burst of `getItemDetail` calls. A temporary `?` badge means that one of those
+batches is still being indexed. The selected variant is withdrawn from its
+exact inventory slot instead of matching only its registry name.
 
 ## Create storage bridge
 

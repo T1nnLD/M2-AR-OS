@@ -1,7 +1,7 @@
 local util = require("m2os.lib.util")
 local config = require("m2os.config").storage
 local args = { ... }
-local MIN_BRIDGE_VERSION = 2
+local MIN_BRIDGE_VERSION = 6
 
 local function usage()
     print("M2OS Create storage client")
@@ -75,7 +75,8 @@ rednet.send(serverId, {
     operation = operation, payload = payload
 }, config.protocol)
 
-local timeout = (operation == "withdraw" or operation == "craft") and 55 or 8
+local timeout = (operation == "withdraw" or operation == "craft") and 55
+    or operation == "stock" and 15 or 8
 local deadline = os.epoch("utc") + timeout * 1000
 local answer
 while os.epoch("utc") < deadline do
@@ -98,6 +99,9 @@ if operation == "stock" then
             item.craftable and " [craft]" or ""))
     end
     print("Items: " .. #items)
+    if answer.data and answer.data.detailsPending then
+        print("Metadata is still indexing; run stock again for updated variants")
+    end
 else
     print(textutils.serialize(answer.data))
 end

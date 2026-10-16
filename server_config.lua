@@ -22,6 +22,16 @@ return {
     -- are connected to the same bridge.
     deduplicateItemVaults = true,
 
+    -- Detailed NBT/enchantment reads are deliberately throttled because too
+    -- many getItemDetail calls in one request can trip a server watchdog.
+    -- Keep this at 4 (8 is the hard safety limit).
+    itemDetailCallsPerScan = 4,
+
+    -- Optional registry-name fragments for unusual modded enchantable items.
+    -- Example: "modid:laser_tool". Vanilla tools and common modded tool names
+    -- are detected automatically.
+    detailedItemPatterns = {},
+
     -- Direct inventory transfers are the default and do not use Create
     -- packages. Crafting through the Stock Ticker remains opt-in because it
     -- requires a complete, stable package route.

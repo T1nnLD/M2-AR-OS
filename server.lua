@@ -2,6 +2,12 @@ local util = require("m2os.lib.util")
 
 local Server = {}
 
+-- getItemDetail is a synchronous main-thread peripheral call. Calling it for
+-- dozens of one-count items in a large Create vault can trip the dedicated
+-- server watchdog, so detailed metadata is indexed in small bounded batches.
+local ITEM_DETAIL_CACHE_MS = 60000
+local ITEM_DETAIL_CALLS_PER_SCAN = 4
+
 local LOCAL_SIDES = {
     left = true, right = true, top = true, bottom = true,
     front = true, back = true
@@ -29,7 +35,8 @@ local function normalizeStock(raw, query, limit)
                 craftable = value.craftable == true or value.isCraftable == true,
                 variant = value.variant,
                 enchantments = value.enchantments,
-                enchanted = value.enchanted == true
+                enchanted = value.enchanted == true,
+                detailPending = value.detailPending == true
             }
         elseif type(key) == "string" then
             item = { name = key, count = tonumber(value) or 0 }
@@ -218,25 +225,58 @@ local function itemVariant(stack, detail)
     }, "|"), enchantments
 end
 
-local function needsItemDetail(stack)
-    return type(stack) == "table"
-        and (stack.nbt ~= nil or (tonumber(stack.count) or 0) <= 1)
+local ENCHANTABLE_NAME_SUFFIXES = {
+    "_sword", "_pickaxe", "_axe", "_shovel", "_hoe",
+    "_helmet", "_chestplate", "_leggings", "_boots",
+    "bow", "crossbow", "trident", "mace", "elytra", "shield",
+    "fishing_rod", "shears", "flint_and_steel", "brush",
+    "enchanted_book", "_hammer", "_drill", "_saw", "_knife",
+    "_dagger", "_spear", "_staff", "_wand", "_cannon"
+}
+
+local function needsItemDetail(stack, config)
+    if type(stack) ~= "table" then return false end
+    if stack.nbt ~= nil then return true end
+    local name = tostring(stack.name or ""):lower()
+    local path = name:match("^[^:]+:(.+)$") or name
+    for _, suffix in ipairs(ENCHANTABLE_NAME_SUFFIXES) do
+        if path:sub(-#suffix) == suffix then return true end
+    end
+    -- Modpacks can add enchantable items with unusual registry names. Extra
+    -- plain-text hints may be supplied without making every vault slot costly.
+    config = type(config) == "table" and config or {}
+    for _, hint in ipairs(config.detailedItemPatterns or {}) do
+        if name:find(tostring(hint):lower(), 1, true) then return true end
+    end
+    return false
+end
+
+local function sortedSlotIndexes(slots)
+    local indexes = {}
+    for slot in pairs(slots) do indexes[#indexes + 1] = slot end
+    table.sort(indexes, function(a, b)
+        return (tonumber(a) or 0) < (tonumber(b) or 0)
+    end)
+    return indexes
 end
 
 local function scanInventories(state)
     state.itemDetailCache = state.itemDetailCache or {}
     local merged = {}
+    local detailCalls = 0
+    local detailsPending = false
+    local maxDetailCalls = math.max(1, math.min(
+        tonumber(state.config.itemDetailCallsPerScan)
+            or ITEM_DETAIL_CALLS_PER_SCAN, 8))
     for _, inventory in ipairs(state.inventories) do
         local ok, slots = pcall(inventory.peripheral.list)
         if ok and type(slots) == "table" then
-            for slot, stack in pairs(slots) do
+            for _, slot in ipairs(sortedSlotIndexes(slots)) do
+                local stack = slots[slot]
                 if type(stack) == "table" and stack.name then
                     local detail = stack
-                    -- Enchanted/damaged equipment is non-stackable. Query
-                    -- detailed data only for those stacks (or stacks with an
-                    -- NBT hash), otherwise a large Item Vault would require a
-                    -- costly peripheral call for every ordinary material.
-                    if needsItemDetail(stack)
+                    local detailPending = false
+                    if needsItemDetail(stack, state.config)
                             and type(inventory.peripheral.getItemDetail) == "function" then
                         local cacheKey = inventory.name .. ":" .. tostring(slot)
                         local signature = table.concat({
@@ -245,16 +285,22 @@ local function scanInventories(state)
                         }, "|")
                         local cached = state.itemDetailCache[cacheKey]
                         if cached and cached.signature == signature
-                                and util.epoch() - cached.time < 5000 then
+                                and util.epoch() - cached.time < ITEM_DETAIL_CACHE_MS then
                             detail = cached.detail
-                        else
+                        elseif detailCalls < maxDetailCalls then
+                            detailCalls = detailCalls + 1
                             local detailOk, value = pcall(
                                 inventory.peripheral.getItemDetail, slot)
                             if detailOk and type(value) == "table" then detail = value end
+                            -- Cache failures as the basic stack too. Otherwise
+                            -- an unsupported inventory would be retried forever.
                             state.itemDetailCache[cacheKey] = {
                                 signature = signature, detail = detail,
                                 time = util.epoch()
                             }
+                        else
+                            detailPending = true
+                            detailsPending = true
                         end
                     end
 
@@ -269,10 +315,12 @@ local function scanInventories(state)
                             count = 0,
                             enchantments = enchantments,
                             enchanted = #enchantments > 0,
+                            detailPending = detailPending,
                             sources = {}
                         }
                         merged[variant] = item
                     end
+                    item.detailPending = item.detailPending or detailPending
                     item.count = item.count + (tonumber(stack.count) or 0)
                     item.sources[#item.sources + 1] = {
                         inventory = inventory.name,
@@ -283,7 +331,7 @@ local function scanInventories(state)
             end
         end
     end
-    return merged
+    return merged, detailsPending
 end
 
 local function movedAmount(value)
@@ -308,7 +356,8 @@ local function playerInventory(manager)
         local slot = tonumber(key)
         if slot and type(stack) == "table" and stack.name then
             local detail = stack
-            if type(manager.getItemDetail) == "function" then
+            if needsItemDetail(stack, {})
+                    and type(manager.getItemDetail) == "function" then
                 local okDetail, value = pcall(manager.getItemDetail, slot)
                 if okDetail and type(value) == "table" then detail = value end
             end
@@ -545,12 +594,13 @@ local function handleRequest(state, sender, message)
             return
         end
         local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
-        local stock = scanInventories(state)
+        local stock, detailsPending = scanInventories(state)
         state.stockVariants = stock
         response(config, sender, message.id, true, {
             items = normalizeStock(stock, payload.query, limit),
             inventories = #state.inventories,
-            itemVaults = countInventoryKind(state.inventories, "item_vault")
+            itemVaults = countInventoryKind(state.inventories, "item_vault"),
+            detailsPending = detailsPending
         })
     elseif operation == "deposit" then
         if not state.manager then
@@ -660,7 +710,7 @@ local function handleRequest(state, sender, message)
                     matches = type(currentStack) == "table"
                     currentDetail = currentStack
                 end
-                if matches and needsItemDetail(currentStack)
+                if matches and needsItemDetail(currentStack, config)
                         and type(sourcePeripheral.getItemDetail) == "function" then
                     local detailOk, detail = pcall(
                         sourcePeripheral.getItemDetail, source.slot)
@@ -800,7 +850,7 @@ function Server.run(config)
                 state.lastMessage = ("#%d discover"):format(sender)
                 rednet.send(sender, {
                     kind = "hello", key = config.sharedKey,
-                    name = "M2OS Create Bridge", version = 5,
+                    name = "M2OS Create Bridge", version = 6,
                     inventories = #state.inventories,
                     detectedInventories = state.discoveredInventoryCount,
                     incompatibleInventories = #state.incompatibleInventories,

@@ -10,7 +10,7 @@ local app = {
     persistent = false
 }
 
-local MIN_BRIDGE_VERSION = 5
+local MIN_BRIDGE_VERSION = 6
 local PANEL_SETTLE_MS = 180
 local DEFAULT_GRID_COLUMNS = 8
 local DEFAULT_GRID_ROWS = 4
@@ -24,6 +24,7 @@ local STORAGE_MUTED = 0x344252
 local QUEUE_VISIBLE_ROWS = 9
 local QUEUE_HISTORY_LIMIT = 18
 local QUEUE_RESULT_LIFETIME_MS = 6000
+local DETAIL_REFRESH_DELAY_MS = 400
 
 local state = {
     modemName = nil,
@@ -53,6 +54,7 @@ local state = {
     appliedQuery = "",
     searchActive = false,
     searchAt = nil,
+    detailRefreshAt = nil,
     ignoreNextChar = false,
     stockGeneration = 0,
     inventoryGeneration = 0,
@@ -345,6 +347,9 @@ local function updatePanel(ctx)
     if not widgets then return end
     local theme = ctx.config.theme
     local statusColor = bridgeReady() and theme.green or theme.amber
+    if state.status == "SYNC" or state.status == "INDEXING" then
+        statusColor = theme.amber
+    end
     if state.status == "ERROR" then statusColor = theme.red end
     setCached(widgets, "statusText", widgets.status, "setContent", state.status)
     setCached(widgets, "statusColor", widgets.status, "setColor", statusColor)
@@ -517,7 +522,9 @@ local function updatePanel(ctx)
             setCached(entry, "countText", entry.count, "setContent",
                 compactCount(item.count))
             setCached(entry, "enchantText", entry.enchantBadge, "setContent",
-                item.enchanted and "E" or "")
+                item.detailPending and "?" or item.enchanted and "E" or "")
+            setCached(entry, "enchantColor", entry.enchantBadge, "setColor",
+                item.detailPending and theme.amber or theme.purple)
         else
             setCached(entry, "backgroundOpacity", entry.background, "setOpacity",
                 active and (storageView and 0.36 or 0.30) or 0)
@@ -745,6 +752,7 @@ end
 
 local function refresh(ctx, query)
     query = tostring(query == nil and state.query or query)
+    state.detailRefreshAt = nil
     if not state.serverId then
         state.status = "SEARCHING"
         refreshPanel(ctx)
@@ -774,8 +782,14 @@ local function refresh(ctx, query)
                 state.offset = math.max(1, math.min(state.offset, state.selected))
             end
             state.appliedQuery = query
-            state.status = "ONLINE"
-            state.statusDetail = nil
+            if data and data.detailsPending then
+                state.status = "INDEXING"
+                state.statusDetail = nil
+                state.detailRefreshAt = util.epoch() + DETAIL_REFRESH_DELAY_MS
+            else
+                state.status = "ONLINE"
+                state.statusDetail = nil
+            end
         else
             state.status = "ERROR"
             state.statusDetail = tostring(err)
@@ -825,6 +839,7 @@ local function togglePanel(ctx)
     ctx.ui.clear()
     state.widgets = nil
     state.drawAt = nil
+    state.detailRefreshAt = nil
     if state.panelOpen then
         state.pointerX, state.pointerY = nil, nil
         state.pointerDirty = false
@@ -909,6 +924,11 @@ end
 local function transfer(ctx, operation, count)
     local item = selectedItem()
     if not item then return end
+    if item.detailPending then
+        ctx.notify("Item data is still indexing; try again in a moment",
+            ctx.config.theme.amber)
+        return
+    end
     local requested = math.min(math.max(1, tonumber(count) or 1), item.count or 1)
     queueOperation(operation, item, requested,
         { name = item.name, variant = item.variant, count = requested },
@@ -1270,9 +1290,15 @@ function app.update(ctx, now)
         state.searchAt = nil
         refresh(ctx, state.query)
     end
+    if state.panelOpen and state.detailRefreshAt
+            and now >= state.detailRefreshAt then
+        state.detailRefreshAt = nil
+        refresh(ctx, state.query)
+    end
     if pruneTransferQueue(now) and state.panelOpen then refreshPanel(ctx) end
     for id, pending in pairs(state.pending) do
-        local timeout = pending.operation == "craft" and 50000 or 8000
+        local timeout = pending.operation == "craft" and 50000
+            or pending.operation == "stock" and 15000 or 8000
         if now - pending.started > timeout then
             state.pending[id] = nil
             if pending.callback then pending.callback(false, nil, "request timeout") end
@@ -1299,6 +1325,7 @@ function app.stop(ctx)
     state.panelOpen = false
     state.searchActive = false
     state.searchAt = nil
+    state.detailRefreshAt = nil
     state.drawAt = nil
     state.widgets = nil
     state.pointerDirty = false
