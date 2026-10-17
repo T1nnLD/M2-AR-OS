@@ -415,16 +415,21 @@ local function createCursorSprite(ctx, x, y, theme)
 
     local pixels = {}
     local center = (CURSOR_TEXTURE_SIZE + 1) / 2
-    local purple = 0xFF000000 + (tonumber(theme.purple) or 0xA83CFF)
+    -- TextureObject.setPixel ultimately accepts a signed Java int. Lua's
+    -- positive 0xFFFFFFFF is outside that range and AP rejects it, leaving
+    -- only the transparent pixels. Express opaque ARGB as signed int32.
+    local white = -1
+    local purple = ((tonumber(theme.purple) or 0xA83CFF) % 0x1000000)
+        - 0x1000000
     for py = 1, CURSOR_TEXTURE_SIZE do
         pixels[py] = {}
         for px = 1, CURSOR_TEXTURE_SIZE do
             local dx, dy = px - center, py - center
             local distanceSquared = dx * dx + dy * dy
             local color = 0x00000000
-            if distanceSquared <= 49 then color = 0xFFFFFFFF end
+            if distanceSquared <= 49 then color = white end
             if distanceSquared <= 30.25 then color = purple end
-            if distanceSquared <= 4 then color = 0xFFFFFFFF end
+            if distanceSquared <= 4 then color = white end
             pixels[py][px] = color
         end
     end
