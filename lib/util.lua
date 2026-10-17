@@ -8,6 +8,25 @@ function util.clamp(value, low, high)
     return math.max(low, math.min(high, value))
 end
 
+-- Return the opaque RGB colour produced by alpha-compositing foreground over
+-- background. This is useful for overlay primitives whose own transparency
+-- would otherwise sample whatever happens to be rendered below them.
+function util.blendColor(foreground, background, alpha)
+    foreground = tonumber(foreground) or 0
+    background = tonumber(background) or 0
+    alpha = util.clamp(tonumber(alpha) or 0, 0, 1)
+    local function channel(color, shift)
+        return math.floor(color / shift) % 256
+    end
+    local function mix(front, back)
+        return math.floor(front * alpha + back * (1 - alpha) + 0.5)
+    end
+    local red = mix(channel(foreground, 65536), channel(background, 65536))
+    local green = mix(channel(foreground, 256), channel(background, 256))
+    local blue = mix(channel(foreground, 1), channel(background, 1))
+    return red * 65536 + green * 256 + blue
+end
+
 function util.readTable(path, fallback)
     if not fs.exists(path) or fs.isDir(path) then
         return fallback

@@ -399,10 +399,6 @@ end
 
 local function placeCursor(widgets)
     if not widgets or not state.pointerX or not state.pointerY then return end
-    -- The radial cursor normally sits over the menu's uniform dark centre.
-    -- Recreate that surface here so its translucent glow cannot sample item
-    -- icons or two differently coloured cells like a lens.
-    objectCall(widgets.cursorBase, "setPos", state.pointerX, state.pointerY, 139)
     objectCall(widgets.cursorGlow, "setPos", state.pointerX, state.pointerY, 140)
     objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 141)
     objectCall(widgets.cursorDot, "setPos", state.pointerX, state.pointerY, 142)
@@ -655,6 +651,8 @@ local function drawPanel(ctx)
     if not state.panelOpen or state.drawAt then return end
     local width, height = ctx.system.getSize()
     local theme = ctx.config.theme
+    local cursorSurface = util.blendColor(theme.blue, theme.background, 0.12)
+    local cursorGlowColor = util.blendColor(theme.purple, cursorSurface, 0.18)
     local panelW, panelH = math.min(356, width - 30), math.min(232, height - 30)
     local x, y = (width - panelW) / 2, (height - panelH) / 2
     local columns = math.max(1, math.min(
@@ -778,17 +776,12 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
-    -- Deliberately use the exact same three Circle objects as radial_menu.lua.
-    -- The opaque base supplies the same uniform dark surface which the radial
-    -- cursor gets from the centre of its menu; only this extra masking layer is
-    -- storage-specific.
-    widgets.cursorBase = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 139, radius = 8,
-        filled = true, color = theme.background, opacity = 1
-    })
+    -- Keep the radial and storage cursors identical. The glow colour is already
+    -- composited against the radial menu surface and is therefore fully opaque:
+    -- it cannot inherit colours from items, cells or the seam between them.
     widgets.cursorGlow = ctx.ui.raw("Circle", {
         gui = true, x = gridX, y = gridY, z = 140, radius = 8,
-        filled = true, color = theme.purple, opacity = 0.18
+        filled = true, color = cursorGlowColor, opacity = 1
     })
     widgets.cursorRing = ctx.ui.raw("Circle", {
         gui = true, x = gridX, y = gridY, z = 141, radius = 5,

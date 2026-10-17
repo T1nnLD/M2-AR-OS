@@ -94,6 +94,8 @@ local function draw(ctx)
     local theme = ctx.config.theme
     local radiusX = math.min(120, width * 0.22)
     local radiusY = math.min(74, height * 0.22)
+    local cursorSurface = util.blendColor(theme.blue, theme.background, 0.12)
+    local cursorGlowColor = util.blendColor(theme.purple, cursorSurface, 0.18)
     local widgets = { cx = cx, cy = cy, entries = {} }
     state.widgets = widgets
 
@@ -137,7 +139,7 @@ local function draw(ctx)
     -- moved with setPos instead of rebuilding the whole radial menu.
     widgets.cursorGlow = ctx.ui.raw("Circle", {
         gui = true, x = cx, y = cy, z = 97, radius = 8,
-        filled = true, color = theme.purple, opacity = 0.18
+        filled = true, color = cursorGlowColor, opacity = 1
     })
     widgets.cursorRing = ctx.ui.raw("Circle", {
         gui = true, x = cx, y = cy, z = 98, radius = 5,
