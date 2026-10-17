@@ -25,44 +25,9 @@ local QUEUE_VISIBLE_ROWS = 9
 local QUEUE_HISTORY_LIMIT = 18
 local QUEUE_RESULT_LIFETIME_MS = 6000
 local DETAIL_REFRESH_DELAY_MS = 400
-local CURSOR_TEXTURE_SIZE = 15
-
--- A tiny PNG is more reliable than changing Texture pixels after Item overlay
--- objects have been populated. AP 0.8.2a occasionally loses dynamically set
--- cursor pixels when an Item object's texture is refreshed, while load() uses
--- an independent native image just like the desktop logo.
-local CURSOR_PNG_BASE64 = table.concat({
-    "iVBORw0KGgoAAAANSUhEUgAAAA8AAAAPCAMAAAAMCGV4AAAAIVBMVEX////////+",
-    "/f/8+f/w3f/pzv/YqP+oPP/BdP+rQv/brv+ZmkppAAAAAXRSTlMAQObYZgAA",
-    "AFRJREFUCNdlj0kCwCAIA0nAjf8/uLHWQ3Uuo0QUzSYAAduAHiWc2NvaJnUVwN4W",
-    "/S186Tqh2LUYyRyywxBykkw5YCwyJ3LhlZ/95/3X++d81/y//z2YzwNnOyg/",
-    "VgAAAABJRU5ErkJggg=="
-})
-
-local function decodeBase64(value)
-    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-    local lookup = {}
-    for index = 1, #alphabet do
-        lookup[alphabet:sub(index, index)] = index - 1
-    end
-    local output, buffer, bitCount = {}, 0, 0
-    for index = 1, #value do
-        local digit = lookup[value:sub(index, index)]
-        if digit then
-            buffer = buffer * 64 + digit
-            bitCount = bitCount + 6
-            if bitCount >= 8 then
-                bitCount = bitCount - 8
-                output[#output + 1] = string.char(
-                    math.floor(buffer / (2 ^ bitCount)) % 256)
-                buffer = buffer % (2 ^ bitCount)
-            end
-        end
-    end
-    return table.concat(output)
-end
-
-local CURSOR_PNG = decodeBase64(CURSOR_PNG_BASE64)
+local CURSOR_GLYPH = "◉"
+local CURSOR_X_OFFSET = 5
+local CURSOR_Y_OFFSET = 6
 
 local STATUS_RU = {
     OFFLINE = "НЕ В СЕТИ",
@@ -435,23 +400,9 @@ end
 
 local function placeCursor(widgets)
     if not widgets or not state.pointerX or not state.pointerY then return end
-    local half = CURSOR_TEXTURE_SIZE / 2
-    objectCall(widgets.cursorSprite, "setPos",
-        state.pointerX - half, state.pointerY - half, 120)
-end
-
-local function createCursorSprite(ctx, x, y, theme)
-    local half = CURSOR_TEXTURE_SIZE / 2
-    local cursor = ctx.ui.raw("Texture", {
-        gui = true, x = x - half, y = y - half, z = 120,
-        sizeX = CURSOR_TEXTURE_SIZE, sizeY = CURSOR_TEXTURE_SIZE,
-        color = theme.white, opacity = 1, culling = false,
-        depthTest = false, depthMask = false
-    })
-    local loaded = objectCall(cursor, "load", CURSOR_PNG)
-    if not loaded then error("cannot load embedded storage cursor PNG", 0) end
-    objectCall(cursor, "setSizes", CURSOR_TEXTURE_SIZE, CURSOR_TEXTURE_SIZE)
-    return cursor
+    objectCall(widgets.cursorReticle, "setPos",
+        state.pointerX - CURSOR_X_OFFSET,
+        state.pointerY - CURSOR_Y_OFFSET, 140)
 end
 
 local function updatePanel(ctx)
@@ -819,10 +770,15 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
-    -- Item objects in AP 0.8.2a can leak their render colour into following
-    -- Circle objects once setItem() is called. The embedded PNG keeps the same
-    -- round white/purple cursor in its own native texture.
-    widgets.cursorSprite = createCursorSprite(ctx, gridX, gridY, theme)
+    -- AP 0.8.2a batches Circle, Rectangle and Texture in unordered render
+    -- passes without depth testing, so z alone cannot keep a Circle cursor
+    -- above the solid panel. Text has renderer weight 110 (solid panel/cell
+    -- objects use 100) and is guaranteed to be drawn last. The bullseye keeps
+    -- the radial menu's round ring/dot appearance and its shadow remains visible
+    -- over both bright item icons and dark cells.
+    widgets.cursorReticle = ctx.ui.text(
+        gridX - CURSOR_X_OFFSET, gridY - CURSOR_Y_OFFSET,
+        CURSOR_GLYPH, theme.white, 1.15, 140, true)
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
 end
@@ -1037,11 +993,6 @@ end
 local function transfer(ctx, operation, count)
     local item = selectedItem()
     if not item then return end
-    if item.detailPending then
-        ctx.notify("Предмет ещё индексируется — попробуй через секунду",
-            ctx.config.theme.amber)
-        return
-    end
     local requested = math.min(math.max(1, tonumber(count) or 1), item.count or 1)
     queueOperation(operation, item, requested,
         { name = item.name, variant = item.variant, count = requested },

@@ -15,6 +15,7 @@ local ITEM_DETAIL_CACHE_FILE = "/m2os/item_detail_cache.db"
 local ITEM_DETAIL_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 local ITEM_DETAIL_CACHE_SAVE_DELAY_MS = 1000
 local BACKGROUND_INDEX_INTERVAL_MS = 500
+local BACKGROUND_INDEX_START_DELAY_MS = 1500
 
 local LOCAL_SIDES = {
     left = true, right = true, top = true, bottom = true,
@@ -207,19 +208,15 @@ end
 local function itemVariant(stack, detail)
     detail = type(detail) == "table" and detail or stack
     local enchantments = normalizeEnchantments(detail)
-    local enchantmentParts = {}
-    for _, enchantment in ipairs(enchantments) do
-        enchantmentParts[#enchantmentParts + 1] = table.concat({
-            tostring(enchantment.name or enchantment.displayName or ""),
-            tostring(enchantment.level or 1)
-        }, "@")
-    end
+    -- Registry id + the list() NBT/data-component fingerprint uniquely tracks
+    -- enchanted books, named tools and other variants before getItemDetail is
+    -- available. Display names and decoded enchantments must not be part of
+    -- the key: those arrive asynchronously and used to change the key while a
+    -- player was clicking it, temporarily making the item unavailable.
     return table.concat({
         tostring(stack.name),
-        tostring(stack.nbt or ""),
-        tostring(detail.displayName or stack.displayName or stack.label or ""),
-        tostring(detail.damage or ""),
-        table.concat(enchantmentParts, ",")
+        tostring(stack.nbt or detail.nbt or ""),
+        tostring(stack.damage or detail.damage or "")
     }, "|"), enchantments
 end
 
@@ -285,7 +282,8 @@ local function itemStackSignature(stack)
     -- getItemDetail reindex after every deposit/withdrawal and made opening
     -- the storage appear to rebuild the whole index repeatedly.
     return table.concat({
-        tostring(stack.name), tostring(stack.nbt or "")
+        tostring(stack.name), tostring(stack.nbt or ""),
+        tostring(stack.damage or "")
     }, "|")
 end
 
@@ -398,7 +396,7 @@ local function itemDetailCacheCount(state)
     return count
 end
 
-local function scanInventories(state)
+local function scanInventories(state, detailCallLimit)
     state.itemDetailCache = state.itemDetailCache or {}
     local merged = {}
     local detailCalls = 0
@@ -407,9 +405,14 @@ local function scanInventories(state)
     local scannedInventories = {}
     local maxCacheAge = tonumber(state.config.itemDetailCacheMaxAge)
         or ITEM_DETAIL_CACHE_MAX_AGE_SECONDS
-    local maxDetailCalls = math.max(1, math.min(
-        tonumber(state.config.itemDetailCallsPerScan)
-            or ITEM_DETAIL_CALLS_PER_SCAN, 8))
+    local maxDetailCalls
+    if detailCallLimit ~= nil then
+        maxDetailCalls = math.max(0, math.min(tonumber(detailCallLimit) or 0, 8))
+    else
+        maxDetailCalls = math.max(1, math.min(
+            tonumber(state.config.itemDetailCallsPerScan)
+                or ITEM_DETAIL_CALLS_PER_SCAN, 8))
+    end
     for _, inventory in ipairs(state.inventories) do
         local ok, slots = pcall(inventory.peripheral.list)
         if ok and type(slots) == "table" then
@@ -778,7 +781,11 @@ local function handleRequest(state, sender, message)
             return
         end
         local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
-        local stock, detailsPending = scanInventories(state)
+        -- A stock request must not wait for synchronous getItemDetail calls.
+        -- Return current counts and all already cached metadata immediately;
+        -- missing display names/enchantments are completed by the background
+        -- indexer and advertised through detailsPending.
+        local stock, detailsPending = scanInventories(state, 0)
         state.stockVariants = stock
         if detailsPending then
             scheduleBackgroundIndex(state, BACKGROUND_INDEX_INTERVAL_MS)
@@ -1046,8 +1053,9 @@ function Server.run(config)
         backgroundIndexing = false, backgroundIndexAt = nil
     }
     refreshPeripherals(state)
-    scheduleBackgroundIndex(state, 0)
-    runBackgroundIndex(state, util.epoch())
+    -- Enter the event loop before the first getItemDetail batch. This makes
+    -- discovery and the basic stock list available immediately after reboot.
+    scheduleBackgroundIndex(state, BACKGROUND_INDEX_START_DELAY_MS)
     printStatus(state)
     local timer = os.startTimer(0.25)
 
