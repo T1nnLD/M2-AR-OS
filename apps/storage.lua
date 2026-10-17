@@ -399,9 +399,7 @@ end
 
 local function placeCursor(widgets)
     if not widgets or not state.pointerX or not state.pointerY then return end
-    objectCall(widgets.cursorGlow, "setPos", state.pointerX, state.pointerY, 140)
-    objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 141)
-    objectCall(widgets.cursorDot, "setPos", state.pointerX, state.pointerY, 142)
+    util.moveTopCursor(widgets.cursor, state.pointerX, state.pointerY, 140)
 end
 
 local function updatePanel(ctx)
@@ -651,8 +649,6 @@ local function drawPanel(ctx)
     if not state.panelOpen or state.drawAt then return end
     local width, height = ctx.system.getSize()
     local theme = ctx.config.theme
-    local cursorSurface = util.blendColor(theme.blue, theme.background, 0.12)
-    local cursorGlowColor = util.blendColor(theme.purple, cursorSurface, 0.18)
     local panelW, panelH = math.min(356, width - 30), math.min(232, height - 30)
     local x, y = (width - panelW) / 2, (height - panelH) / 2
     local columns = math.max(1, math.min(
@@ -776,21 +772,7 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
-    -- Keep the radial and storage cursors identical. The glow colour is already
-    -- composited against the radial menu surface and is therefore fully opaque:
-    -- it cannot inherit colours from items, cells or the seam between them.
-    widgets.cursorGlow = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 140, radius = 8,
-        filled = true, color = cursorGlowColor, opacity = 1
-    })
-    widgets.cursorRing = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 141, radius = 5,
-        filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
-    })
-    widgets.cursorDot = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 142, radius = 1.8,
-        filled = true, color = theme.purple, opacity = 1
-    })
+    widgets.cursor = util.createTopCursor(ctx.ui, gridX, gridY, 140, theme)
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
 end

@@ -63,9 +63,7 @@ local function updateVisuals(ctx)
 
     local cursorX = widgets.cx + state.pointerX
     local cursorY = widgets.cy + state.pointerY
-    objectCall(widgets.cursorGlow, "setPos", cursorX, cursorY, 97)
-    objectCall(widgets.cursorRing, "setPos", cursorX, cursorY, 98)
-    objectCall(widgets.cursorDot, "setPos", cursorX, cursorY, 99)
+    util.moveTopCursor(widgets.cursor, cursorX, cursorY, 97)
 
     for index, entry in ipairs(widgets.entries) do
         local selected = state.armed and index == state.selected
@@ -94,8 +92,6 @@ local function draw(ctx)
     local theme = ctx.config.theme
     local radiusX = math.min(120, width * 0.22)
     local radiusY = math.min(74, height * 0.22)
-    local cursorSurface = util.blendColor(theme.blue, theme.background, 0.12)
-    local cursorGlowColor = util.blendColor(theme.purple, cursorSurface, 0.18)
     local widgets = { cx = cx, cy = cy, entries = {} }
     state.widgets = widgets
 
@@ -135,20 +131,7 @@ local function draw(ctx)
         }
     end
 
-    -- Three layers stay visible on both dark and bright backgrounds. They are
-    -- moved with setPos instead of rebuilding the whole radial menu.
-    widgets.cursorGlow = ctx.ui.raw("Circle", {
-        gui = true, x = cx, y = cy, z = 97, radius = 8,
-        filled = true, color = cursorGlowColor, opacity = 1
-    })
-    widgets.cursorRing = ctx.ui.raw("Circle", {
-        gui = true, x = cx, y = cy, z = 98, radius = 5,
-        filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
-    })
-    widgets.cursorDot = ctx.ui.raw("Circle", {
-        gui = true, x = cx, y = cy, z = 99, radius = 1.8,
-        filled = true, color = theme.purple, opacity = 1
-    })
+    widgets.cursor = util.createTopCursor(ctx.ui, cx, cy, 97, theme)
     updateVisuals(ctx)
 end
 

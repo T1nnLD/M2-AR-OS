@@ -27,6 +27,47 @@ function util.blendColor(foreground, background, alpha)
     return red * 65536 + green * 256 + blue
 end
 
+-- AP 0.8.2a renders Text after Rectangle, Item, Texture and Circle. Build the
+-- round pointer from font circles so it cannot disappear underneath a panel.
+-- Both storage and the radial menu call these helpers and therefore use the
+-- same geometry, colours and renderer.
+local CURSOR_TEXT_LAYERS = {
+    { key = "glow", glyph = "●", size = 1.75, y = -7.875 },
+    { key = "ring", glyph = "○", size = 1.18, y = -5.31 },
+    { key = "dot", glyph = "●", size = 0.43, y = -1.935 }
+}
+
+function util.createTopCursor(ui, x, y, z, theme)
+    local surface = util.blendColor(theme.blue, theme.background, 0.12)
+    local colours = {
+        glow = util.blendColor(theme.purple, surface, 0.18),
+        ring = theme.white,
+        dot = theme.purple
+    }
+    local cursor = { baseZ = z }
+    for index, layer in ipairs(CURSOR_TEXT_LAYERS) do
+        cursor[layer.key] = ui.raw("Text", {
+            gui = true, x = x, y = y + layer.y, z = z + index - 1,
+            content = layer.glyph, color = colours[layer.key], opacity = 1,
+            fontSize = layer.size, shadow = false, center = true,
+            culling = false, depthTest = false
+        })
+    end
+    return cursor
+end
+
+function util.moveTopCursor(cursor, x, y, z)
+    if type(cursor) ~= "table" then return end
+    z = tonumber(z) or cursor.baseZ or 0
+    cursor.baseZ = z
+    for index, layer in ipairs(CURSOR_TEXT_LAYERS) do
+        local object = cursor[layer.key]
+        if object and type(object.setPos) == "function" then
+            pcall(object.setPos, x, y + layer.y, z + index - 1)
+        end
+    end
+end
+
 function util.readTable(path, fallback)
     if not fs.exists(path) or fs.isDir(path) then
         return fallback
