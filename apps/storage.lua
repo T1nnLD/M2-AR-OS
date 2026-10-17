@@ -399,7 +399,10 @@ end
 
 local function placeCursor(widgets)
     if not widgets or not state.pointerX or not state.pointerY then return end
-    -- Keep this identical to the radial menu cursor: glow, white ring and dot.
+    -- The radial cursor normally sits over the menu's uniform dark centre.
+    -- Recreate that surface here so its translucent glow cannot sample item
+    -- icons or two differently coloured cells like a lens.
+    objectCall(widgets.cursorBase, "setPos", state.pointerX, state.pointerY, 139)
     objectCall(widgets.cursorGlow, "setPos", state.pointerX, state.pointerY, 140)
     objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 141)
     objectCall(widgets.cursorDot, "setPos", state.pointerX, state.pointerY, 142)
@@ -776,8 +779,13 @@ local function drawPanel(ctx)
         }
     end
     -- Deliberately use the exact same three Circle objects as radial_menu.lua.
-    -- They are created after every panel/item object and kept together while
-    -- moving, so an inventory refresh cannot replace the cursor with a glyph.
+    -- The opaque base supplies the same uniform dark surface which the radial
+    -- cursor gets from the centre of its menu; only this extra masking layer is
+    -- storage-specific.
+    widgets.cursorBase = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 139, radius = 8,
+        filled = true, color = theme.background, opacity = 1
+    })
     widgets.cursorGlow = ctx.ui.raw("Circle", {
         gui = true, x = gridX, y = gridY, z = 140, radius = 8,
         filled = true, color = theme.purple, opacity = 0.18
