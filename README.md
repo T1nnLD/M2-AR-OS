@@ -58,8 +58,9 @@ English, or by registry ID. Prefix a mod with `@` (`@create`, or
 `@create шестерня`) to limit results to that mod. Search is case-insensitive for
 both Cyrillic and Latin text. `Backspace` removes one complete UTF-8 character,
 `Delete` clears the query, and `Enter` applies it immediately (otherwise it
-applies after a short delay). Left click takes one,
-right click takes a stack. Select the `INVENTORY` tab at the top, or press `I`,
+applies after a short delay). Left click takes one, `Ctrl` + left click takes
+ten, and `Shift` + left click takes a stack. Right click also takes a stack.
+Select the `INVENTORY` tab at the top, or press `I`,
 to see the player's inventory. Clicking an occupied player slot deposits that
 slot's complete stack; depositing a single item is intentionally not supported.
 The clicked stack disappears immediately and both panels are reconciled with
@@ -67,12 +68,16 @@ the server response. A partial transfer reports that storage is full and shows
 the moved/total count. Withdrawal behaves the same way when the player inventory
 has insufficient space. Middle click or `P` remains available as a shortcut for
 depositing up to 64 items matching the main-hand item. `C` requests one crafted
-item when optional Create crafting is enabled. Closing the Keyboard module
+item when optional Create crafting is enabled; the same `Ctrl`/`Shift` amount
+modifiers apply to `C` and `Enter`. Closing the Keyboard module
 closes the panel.
 
-The request bar at the bottom mirrors Create's Stock Keeper: queued transfers
-show native item icons, amounts and their current state. Enchanted and plain
-items are listed separately. Enchanted cells carry a `З` badge, and hovering
+The request bar at the bottom mirrors Create's Stock Keeper: transfers remain
+there until clicked, and show native item icons, editable amounts and their
+current state. Scroll up/down over an entry to add/subtract one; hold `Ctrl` for
+ten or `Shift` for a stack. Increasing a completed withdrawal requests the
+difference, while decreasing it returns the difference to storage. Enchanted
+and plain items are listed separately. Enchanted cells carry a `З` badge, and hovering
 them opens a tooltip with their enchantments. Bridge protocol v7 indexes item
 metadata in bounded batches, so large Create vaults cannot cause an unbounded
 burst of `getItemDetail` calls. A temporary `?` badge means that one of those

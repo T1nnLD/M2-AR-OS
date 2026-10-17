@@ -22,9 +22,8 @@ local CURSOR_FLUSH_INTERVAL_MS = 25
 local SEARCH_DELAY_MS = 300
 local STORAGE_MUTED = 0x344252
 local QUEUE_VISIBLE_ROWS = 9
-local QUEUE_HISTORY_LIMIT = 18
-local QUEUE_RESULT_LIFETIME_MS = 6000
 local DETAIL_REFRESH_DELAY_MS = 400
+local DEFAULT_STACK_SIZE = 64
 
 local STATUS_RU = {
     OFFLINE = "НЕ В СЕТИ",
@@ -107,7 +106,9 @@ local state = {
     inventoryGeneration = 0,
     transferQueue = {},
     transferSequence = 0,
-    transferBusy = false
+    transferBusy = false,
+    ctrlDown = false,
+    shiftDown = false
 }
 
 local function objectCall(object, method, ...)
@@ -269,45 +270,35 @@ local function queueOperation(operation, item, count, payload, callback)
         label = item and readableItemLabel(item) or "стак в руке",
         enchantments = item and item.enchantments or nil,
         enchanted = item and item.enchanted == true or false,
+        variant = item and item.variant or nil,
         requested = math.max(1, tonumber(count) or 1),
+        moved = 0,
         status = "queued",
         started = util.epoch(),
         payload = payload,
         callback = callback
     }
     state.transferQueue[#state.transferQueue + 1] = entry
-
-    while #state.transferQueue > QUEUE_HISTORY_LIMIT do
-        local removed = false
-        for index = 1, #state.transferQueue do
-            local status = state.transferQueue[index].status
-            if status ~= "pending" and status ~= "queued" then
-                table.remove(state.transferQueue, index)
-                removed = true
-                break
-            end
-        end
-        if not removed then break end
-    end
     return entry
 end
 
 local function finishQueueOperation(entry, ok, data, err)
     if not entry then return end
     entry.finished = util.epoch()
-    entry.expires = entry.finished + QUEUE_RESULT_LIFETIME_MS
-    entry.moved = tonumber(data and data.moved) or 0
+    local batchMoved = tonumber(data and data.moved) or 0
+    entry.moved = math.max(0, (tonumber(entry.moved) or 0)
+        + (tonumber(entry.batchSign) or 1) * batchMoved)
     entry.error = err and localizedError(err) or nil
-    local requested = tonumber(data and data.requested) or entry.requested
     local remaining = tonumber(data and data.remaining) or 0
-    entry.requested = requested
     if not ok then
         entry.status = "failed"
-    elseif remaining > 0 or entry.moved < requested then
+    elseif remaining > 0 or entry.moved ~= entry.requested then
         entry.status = "partial"
     else
         entry.status = "done"
     end
+    entry.batchSign = nil
+    entry.batchRequested = nil
 end
 
 local function queueDetail(entry)
@@ -321,7 +312,8 @@ local function queueDetail(entry)
         return ("%s x%d  ЖДУ"):format(action, entry.requested)
     end
     if entry.status == "partial" then
-        return ("%s %d/%d ЧАСТЬ"):format(action, entry.moved or 0, entry.requested)
+        return ("%s %d/%d ЧАСТЬ"):format(action,
+            entry.moved or 0, entry.requested)
     end
     if entry.status == "failed" then
         return ("%s x%d  СБОЙ"):format(action, entry.requested)
@@ -332,33 +324,45 @@ end
 local function visibleQueueEntries()
     local visible = {}
     for _, entry in ipairs(state.transferQueue) do
-        if entry.status == "queued" or entry.status == "pending" then
-            visible[#visible + 1] = entry
-            if #visible >= QUEUE_VISIBLE_ROWS then return visible end
-        end
-    end
-    for index = #state.transferQueue, 1, -1 do
-        local entry = state.transferQueue[index]
-        if entry.status ~= "queued" and entry.status ~= "pending" then
-            visible[#visible + 1] = entry
-            if #visible >= QUEUE_VISIBLE_ROWS then break end
-        end
+        visible[#visible + 1] = entry
+        if #visible >= QUEUE_VISIBLE_ROWS then break end
     end
     return visible
 end
 
 local processTransferQueue
 
-local function pruneTransferQueue(now)
-    local changed = false
+local function removeQueueEntry(entry)
+    if not entry then return false end
     for index = #state.transferQueue, 1, -1 do
-        local entry = state.transferQueue[index]
-        if entry.expires and now >= entry.expires then
+        if state.transferQueue[index] == entry then
             table.remove(state.transferQueue, index)
-            changed = true
+            return true
         end
     end
-    return changed
+    return false
+end
+
+local function modifierAmount()
+    if state.shiftDown then return DEFAULT_STACK_SIZE end
+    if state.ctrlDown then return 10 end
+    return 1
+end
+
+local function isModifierKey(code)
+    if not keys or type(code) ~= "number" then return nil end
+    if (keys.leftCtrl and code == keys.leftCtrl)
+            or (keys.rightCtrl and code == keys.rightCtrl) then return "ctrl" end
+    if (keys.leftShift and code == keys.leftShift)
+            or (keys.rightShift and code == keys.rightShift) then return "shift" end
+    return nil
+end
+
+local function setModifier(code, pressed)
+    local modifier = isModifierKey(code)
+    if modifier == "ctrl" then state.ctrlDown = pressed == true end
+    if modifier == "shift" then state.shiftDown = pressed == true end
+    return modifier ~= nil
 end
 
 local function setCellGeometry(entry, x, y, size)
@@ -473,19 +477,14 @@ local function updatePanel(ctx)
         objectCall(widgets.tabMarker, "setPos", tabMarkerX, widgets.panelY + 19, 77)
     end
     setCached(widgets, "footerText", widgets.footer, "setContent",
-        storageView and "ЛКМ:1  ПКМ:стак  I:инвентарь"
+        hoveredQueued and "ЛКМ:убрать  КОЛЕСО:+/-  CTRL:10 SHIFT:стак"
+            or storageView and "ЛКМ:1  CTRL:10  SHIFT:стак  I:инв."
             or "КЛИК: положить стак  I:склад")
 
     if widgets.queueRows then
         local hidden = math.max(0, #state.transferQueue - #visibleQueue)
-        local waiting = 0
-        for _, queued in ipairs(state.transferQueue) do
-            if queued.status == "queued" or queued.status == "pending" then
-                waiting = waiting + 1
-            end
-        end
         setCached(widgets, "queueTitleText", widgets.queueTitle, "setContent",
-            ("ОЧЕРЕДЬ ЗАПРОСОВ  %d%s"):format(waiting,
+            ("ОЧЕРЕДЬ  %d%s"):format(#state.transferQueue,
                 hidden > 0 and ("  +" .. hidden) or ""))
         for index, row in ipairs(widgets.queueRows) do
             local queued = visibleQueue[index]
@@ -497,11 +496,8 @@ local function updatePanel(ctx)
                 setCached(row, "backgroundOpacity", row.background, "setOpacity",
                     (queued.status == "pending" or queued.status == "queued")
                         and 0.42 or 0.24)
-                local shownCount = queued.status == "partial" and queued.moved
-                    or queued.status == "done" and queued.moved
-                    or queued.requested
                 setCached(row, "countText", row.count, "setContent",
-                    compactCount(shownCount))
+                    compactCount(queued.requested))
                 setCached(row, "stateText", row.state, "setContent",
                     queued.status == "pending" and "Ж"
                         or queued.status == "queued" and ">"
@@ -876,10 +872,52 @@ processTransferQueue = function(ctx)
     end
     if not queued then return false end
 
+    local difference = (tonumber(queued.requested) or 0)
+        - (tonumber(queued.moved) or 0)
+    if difference == 0 then
+        queued.status = "done"
+        return processTransferQueue(ctx)
+    end
+
+    local batchSign = difference > 0 and 1 or -1
+    local batchCount = math.abs(difference)
+    local operation = queued.operation
+    if batchSign < 0 then
+        if operation == "withdraw" then
+            operation = "deposit"
+        elseif operation == "deposit" then
+            operation = "withdraw"
+        else
+            -- Crafting cannot be reversed. Keep the honest delivered amount.
+            queued.requested = queued.moved
+            queued.status = "done"
+            return processTransferQueue(ctx)
+        end
+    end
+
+    local payload
+    if batchSign > 0 and (tonumber(queued.moved) or 0) == 0
+            and type(queued.payload) == "table" then
+        payload = util.copy(queued.payload)
+        payload.count = batchCount
+    elseif operation == "withdraw" then
+        payload = {
+            name = queued.name, variant = queued.variant, count = batchCount
+        }
+    elseif operation == "deposit" then
+        payload = { name = queued.name, count = batchCount }
+    else
+        payload = { name = queued.name, count = batchCount }
+    end
+
     state.transferBusy = true
     queued.status = "pending"
+    queued.batchSign = batchSign
+    queued.batchRequested = batchCount
     refreshPanel(ctx)
-    send(ctx, queued.operation, queued.payload, function(ok, data, err)
+    send(ctx, operation, payload, function(ok, data, err)
+        local requeue = queued.requeueAfterPending == true
+        queued.requeueAfterPending = nil
         finishQueueOperation(queued, ok, data, err)
         if queued.callback then
             local callbackOk, callbackError = pcall(queued.callback, ok, data, err)
@@ -891,7 +929,9 @@ processTransferQueue = function(ctx)
             end
         end
         queued.callback = nil
-        queued.payload = nil
+        if requeue and queued.requested ~= queued.moved then
+            queued.status = "queued"
+        end
         state.transferBusy = false
         refreshPanel(ctx)
         if not processTransferQueue(ctx) then refresh(ctx) end
@@ -922,6 +962,9 @@ local function togglePanel(ctx)
             drawPanel(ctx)
         end
         refresh(ctx)
+    else
+        state.ctrlDown = false
+        state.shiftDown = false
     end
 end
 
@@ -943,6 +986,8 @@ function app.start(ctx)
     state.transferQueue = {}
     state.transferSequence = 0
     state.transferBusy = false
+    state.ctrlDown = false
+    state.shiftDown = false
     ctx.services.provide("storage", {
         discover = function() return discover(ctx) end,
         status = function()
@@ -1150,6 +1195,46 @@ local function pointerInside(x, y, width, height)
         and state.pointerY >= y and state.pointerY < y + height
 end
 
+local function queueEntryAtPointer(widgets)
+    if not widgets or not widgets.queueRows
+            or not pointerInside(widgets.queueX, widgets.queueY,
+                widgets.queueWidth, widgets.queueSlotSize) then return nil end
+    local slot = math.floor(
+        (state.pointerX - widgets.queueX) / widgets.queueSlotSize) + 1
+    return visibleQueueEntries()[slot]
+end
+
+local function adjustQueueEntry(ctx, entry, amount)
+    if not entry or amount == 0 then return false end
+    if not entry.name then
+        ctx.notify("Эту запись нельзя изменить: нет имени предмета",
+            ctx.config.theme.amber)
+        return false
+    end
+
+    local requested = math.max(1,
+        math.floor((tonumber(entry.requested) or 1) + amount))
+    if entry.operation == "craft" then
+        requested = math.max(requested, tonumber(entry.moved) or 0)
+    end
+    if requested == entry.requested then return false end
+
+    entry.requested = requested
+    entry.error = nil
+    if entry.status == "pending" then
+        -- The in-flight packet cannot be cancelled. Apply the new target as
+        -- soon as its reply arrives (including a reverse deposit if needed).
+        entry.requeueAfterPending = true
+    elseif entry.requested == entry.moved then
+        entry.status = "done"
+    else
+        entry.status = "queued"
+    end
+    refreshPanel(ctx)
+    processTransferQueue(ctx)
+    return true
+end
+
 local function selectPage(ctx, requestedPage)
     local widgets = state.widgets
     if not widgets or #state.rows == 0 then return end
@@ -1179,7 +1264,11 @@ end
 
 function app.onEvent(ctx, event, sender, message, protocol)
     if state.panelOpen then
-        if event == "char" and state.searchActive then
+        if event == "key" and setModifier(tonumber(sender), true) then
+            return true
+        elseif event == "key_up" and setModifier(tonumber(sender), false) then
+            return true
+        elseif event == "char" and state.searchActive then
             if state.ignoreNextChar then
                 state.ignoreNextChar = false
             else
@@ -1203,8 +1292,14 @@ function app.onEvent(ctx, event, sender, message, protocol)
             movePointer(ctx, dx, dy)
             return true
         elseif event == "player_mouse_scroll" then
-            if state.view ~= "storage" then return true end
             local direction = tonumber(sender) or 1
+            local queued = queueEntryAtPointer(state.widgets)
+            if queued then
+                adjustQueueEntry(ctx, queued,
+                    (direction > 0 and -1 or 1) * modifierAmount())
+                return true
+            end
+            if state.view ~= "storage" then return true end
             local currentPage = state.widgets
                 and math.floor((state.offset - 1) / state.widgets.pageSize) + 1 or 1
             selectPage(ctx, currentPage + (direction > 0 and 1 or -1))
@@ -1213,6 +1308,13 @@ function app.onEvent(ctx, event, sender, message, protocol)
             -- AP reports mouse buttons as 1=left, 2=right, 3=middle.
             local button = tonumber(sender) or 1
             local widgets = state.widgets
+            local queued = queueEntryAtPointer(widgets)
+            if queued and button == 1 then
+                removeQueueEntry(queued)
+                state.hoveredQueueSlot = nil
+                refreshPanel(ctx)
+                return true
+            end
             if widgets and button == 1
                     and pointerInside(widgets.storageTabX, widgets.storageTabY,
                         widgets.storageTabW, widgets.storageTabH) then
@@ -1268,7 +1370,8 @@ function app.onEvent(ctx, event, sender, message, protocol)
                     widgets.gridRows * widgets.slotSize) then return true end
             state.searchActive = false
             refreshPanel(ctx)
-            transfer(ctx, "withdraw", button == 2 and 64 or 1)
+            transfer(ctx, "withdraw",
+                button == 2 and DEFAULT_STACK_SIZE or modifierAmount())
             return true
         elseif event == "key" and keys then
             local code = tonumber(sender)
@@ -1304,10 +1407,13 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 refreshPanel(ctx)
                 return true
             end
-            if code == keys.c then transfer(ctx, "craft", 1) return true end
-            if code == keys.q then transfer(ctx, "withdraw", 64) return true end
+            if code == keys.c then transfer(ctx, "craft", modifierAmount()) return true end
+            if code == keys.q then
+                transfer(ctx, "withdraw", DEFAULT_STACK_SIZE)
+                return true
+            end
             if code == keys.enter or code == keys.numPadEnter then
-                transfer(ctx, "withdraw", 1) return true
+                transfer(ctx, "withdraw", modifierAmount()) return true
             end
             if code == keys.p then
                 depositHand(ctx)
@@ -1370,7 +1476,6 @@ function app.update(ctx, now)
         state.detailRefreshAt = nil
         refresh(ctx, state.query)
     end
-    if pruneTransferQueue(now) and state.panelOpen then refreshPanel(ctx) end
     for id, pending in pairs(state.pending) do
         local timeout = pending.operation == "craft" and 50000
             or pending.operation == "stock" and 15000 or 8000
@@ -1406,6 +1511,8 @@ function app.stop(ctx)
     state.pointerDirty = false
     state.lastPointerFlush = 0
     state.hoveredQueueSlot = nil
+    state.ctrlDown = false
+    state.shiftDown = false
 end
 
 api.registerApp(app)
