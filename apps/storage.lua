@@ -409,8 +409,10 @@ end
 
 local function placeCursor(widgets, theme, restoreVisual)
     if not widgets or not state.pointerX or not state.pointerY then return end
-    placeCursorLayer(widgets.cursorBackdrop, 97, 0x080A12, restoreVisual)
-    placeCursorLayer(widgets.cursorRing, 98, theme.white, restoreVisual)
+    placeCursorLayer(widgets.cursorBackdropH, 97, 0x080A12, restoreVisual)
+    placeCursorLayer(widgets.cursorBackdropV, 97, 0x080A12, restoreVisual)
+    placeCursorLayer(widgets.cursorLineH, 98, theme.white, restoreVisual)
+    placeCursorLayer(widgets.cursorLineV, 98, theme.white, restoreVisual)
     placeCursorLayer(widgets.cursorDot, 99, theme.purple, restoreVisual)
     if restoreVisual then state.lastCursorVisualRefresh = util.epoch() end
 end
@@ -780,20 +782,19 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
-    -- A solid dark backplate plus an opaque ring and centre dot keeps the
-    -- pointer readable over both item sprites and transparent UI elements.
-    widgets.cursorBackdrop = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 97, radius = 5.5,
-        filled = true, color = 0x080A12, opacity = 1
-    })
-    widgets.cursorRing = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 98, radius = 4.25,
-        filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
-    })
-    widgets.cursorDot = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 99, radius = 1.35,
-        filled = true, color = theme.purple, opacity = 1
-    })
+    -- Circle objects in AP 0.8.2a can inherit the colour beneath them after
+    -- blending. Plain Rectangles use the stable opaque render path already
+    -- used by the panel, so build a small high-contrast crosshair from them.
+    widgets.cursorBackdropH = ctx.ui.rectangle(
+        gridX - 7, gridY - 2.5, 14, 5, 0x080A12, 1, 97)
+    widgets.cursorBackdropV = ctx.ui.rectangle(
+        gridX - 2.5, gridY - 7, 5, 14, 0x080A12, 1, 97)
+    widgets.cursorLineH = ctx.ui.rectangle(
+        gridX - 6, gridY - 0.75, 12, 1.5, theme.white, 1, 98)
+    widgets.cursorLineV = ctx.ui.rectangle(
+        gridX - 0.75, gridY - 6, 1.5, 12, theme.white, 1, 98)
+    widgets.cursorDot = ctx.ui.rectangle(
+        gridX - 1.5, gridY - 1.5, 3, 3, theme.purple, 1, 99)
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
 end
