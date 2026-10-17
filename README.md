@@ -78,19 +78,21 @@ current state. Scroll up/down over an entry to add/subtract one; hold `Ctrl` for
 ten or `Shift` for a stack. Increasing a completed withdrawal requests the
 difference, while decreasing it returns the difference to storage. Enchanted
 and plain items are listed separately. Enchanted cells carry a `З` badge, and hovering
-them opens a tooltip with their enchantments. Bridge protocol v7 indexes item
-metadata in bounded batches, so large Create vaults cannot cause an unbounded
-burst of `getItemDetail` calls. A temporary `?` badge means that one of those
-batches is still being indexed. The selected variant is withdrawn from its
-exact inventory slot instead of matching only its registry name.
+them opens a tooltip with their enchantments. Bridge protocol v8 takes one
+inventory snapshot, then indexes each unique item variant once with a pause
+between `getItemDetail` calls. Identical stacks share one compact cache entry,
+and progress checks no longer rescan a large Create vault. A temporary `?` badge
+means that the item is still being indexed. The
+selected variant is withdrawn from its exact inventory slot instead of matching
+only its registry name.
 
 The bridge stores compact indexed metadata in `/m2os/item_detail_cache.db`.
 It starts indexing connected storage immediately after launch and continues in
 small background batches, so nobody has to keep the storage window open.
-The cache survives bridge and server restarts, is invalidated for changed
-inventory slots, and is revalidated after seven days by default. Configure or
-disable it with `itemDetailCacheFile` and `itemDetailCacheMaxAge` in
-`server_config.lua`.
+The cache survives bridge and server restarts, is shared by identical item
+variants across all inventory slots, and is revalidated after seven days by
+default. Configure or disable it with `itemDetailCacheFile` and
+`itemDetailCacheMaxAge` in `server_config.lua`.
 
 For localized item and enchantment names, install **CC: Tweaked Unicode
 Support** on both the Minecraft client and server. The bridge indexes the real

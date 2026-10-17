@@ -10,7 +10,7 @@ local app = {
     persistent = false
 }
 
-local MIN_BRIDGE_VERSION = 7
+local MIN_BRIDGE_VERSION = 8
 local PANEL_SETTLE_MS = 180
 local DEFAULT_GRID_COLUMNS = 8
 local DEFAULT_GRID_ROWS = 4
@@ -22,7 +22,9 @@ local CURSOR_FLUSH_INTERVAL_MS = 25
 local SEARCH_DELAY_MS = 300
 local STORAGE_MUTED = 0x344252
 local QUEUE_VISIBLE_ROWS = 9
-local DETAIL_REFRESH_DELAY_MS = 400
+-- The bridge indexes one item detail per slice. Progress polling is cheap, but
+-- a calmer cadence keeps rednet/UI traffic low on a busy multiplayer server.
+local DETAIL_REFRESH_DELAY_MS = 1500
 local DEFAULT_STACK_SIZE = 64
 
 local STATUS_RU = {
@@ -809,7 +811,10 @@ local function refreshPlayerInventory(ctx)
     end)
 end
 
-local function refresh(ctx, query)
+local refresh
+local refreshIndexStatus
+
+refresh = function(ctx, query)
     query = tostring(query == nil and state.query or query)
     state.detailRefreshAt = nil
     if not state.serverId then
@@ -858,6 +863,32 @@ local function refresh(ctx, query)
             ctx.notify("Хранилище: " .. localizedError(err), ctx.config.theme.red)
         end
         refreshPanel(ctx)
+    end)
+end
+
+refreshIndexStatus = function(ctx)
+    if not state.panelOpen or not bridgeReady() then return end
+    send(ctx, "index_status", {}, function(ok, data, err)
+        if not state.panelOpen then return end
+        if not ok then
+            state.status = "ERROR"
+            state.statusDetail = localizedError(err)
+            refreshPanel(ctx)
+            return
+        end
+        state.indexed = math.max(0, tonumber(data and data.indexed) or 0)
+        state.indexTotal = math.max(state.indexed,
+            tonumber(data and data.indexTotal) or 0)
+        if data and data.detailsPending then
+            state.status = "INDEXING"
+            state.statusDetail = nil
+            state.detailRefreshAt = util.epoch() + DETAIL_REFRESH_DELAY_MS
+            refreshPanel(ctx)
+        else
+            -- One final stock snapshot applies all names/enchantments that the
+            -- worker has just cached. No repeated full-vault scans are needed.
+            refresh(ctx, state.query)
+        end
     end)
 end
 
@@ -1474,7 +1505,7 @@ function app.update(ctx, now)
     if state.panelOpen and state.detailRefreshAt
             and now >= state.detailRefreshAt then
         state.detailRefreshAt = nil
-        refresh(ctx, state.query)
+        refreshIndexStatus(ctx)
     end
     for id, pending in pairs(state.pending) do
         local timeout = pending.operation == "craft" and 50000
