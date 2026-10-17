@@ -170,11 +170,9 @@ Start it with:
 m2os_server
 ```
 
-The server installer also adds `/startup/m2os_server.lua`. An advanced computer
-starts the bridge in its own tab; a normal computer runs it in the foreground.
-An existing `/startup.lua` containing `m2os_server` remains authoritative and
-the installed helper will not start a duplicate. CC:Tweaked computers cannot
-execute while their Minecraft chunk is unloaded. Force-load the chunks
+The installer does not modify startup files. To launch the bridge automatically,
+put `shell.run("m2os_server")` in your own `/startup.lua`. CC:Tweaked computers
+cannot execute while their Minecraft chunk is unloaded. Force-load the chunks
 containing the bridge computer, Inventory Manager and storage (for example with
 the modpack's chunk-loading system), otherwise indexing pauses until a player
 loads them again.

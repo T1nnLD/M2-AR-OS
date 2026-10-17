@@ -2,7 +2,7 @@
 -- Usage: wget run <raw-url>/install.lua [glasses|server|all]
 
 local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/"
-local INSTALLER_VERSION = "2.2-index-safety"
+local INSTALLER_VERSION = "2.3-no-autostart"
 local args = { ... }
 
 local cacheBuster = tostring(os.clock())
@@ -73,8 +73,7 @@ local glasses = {
 local server = {
     { "server.lua", "/m2os/server.lua" },
     { "server_config.lua", "/m2os/server_config.lua", preserve = true },
-    { "bin/m2os_server.lua", "/m2os_server.lua" },
-    { "bin/m2os_server_startup.lua", "/startup/m2os_server.lua" }
+    { "bin/m2os_server.lua", "/m2os_server.lua" }
 }
 
 local files, known = {}, {}
@@ -194,6 +193,16 @@ for index, entry in ipairs(files) do
         if fs.exists(backup) then fs.delete(backup) end
         writeLine("OK", COLORS.lime)
     end
+end
+
+-- Version 2.2 briefly installed its own startup helper. Startup policy belongs
+-- to the computer owner, so remove only that exact obsolete file. A user's
+-- root /startup.lua is never touched.
+if (mode == "server" or mode == "all")
+        and fs.exists("/startup/m2os_server.lua")
+        and not fs.isDir("/startup/m2os_server.lua") then
+    fs.delete("/startup/m2os_server.lua")
+    writeLine("Removed obsolete /startup/m2os_server.lua", COLORS.orange)
 end
 
 -- A successful update must never leave installer-owned copies behind.
