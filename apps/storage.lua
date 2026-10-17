@@ -25,6 +25,7 @@ local QUEUE_VISIBLE_ROWS = 9
 local QUEUE_HISTORY_LIMIT = 18
 local QUEUE_RESULT_LIFETIME_MS = 6000
 local DETAIL_REFRESH_DELAY_MS = 400
+local CURSOR_TEXTURE_SIZE = 15
 
 local STATUS_RU = {
     OFFLINE = "НЕ В СЕТИ",
@@ -397,9 +398,48 @@ end
 
 local function placeCursor(widgets)
     if not widgets or not state.pointerX or not state.pointerY then return end
-    objectCall(widgets.cursorGlow, "setPos", state.pointerX, state.pointerY, 97)
-    objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 98)
-    objectCall(widgets.cursorDot, "setPos", state.pointerX, state.pointerY, 99)
+    local half = CURSOR_TEXTURE_SIZE / 2
+    objectCall(widgets.cursorSprite, "setPos",
+        state.pointerX - half, state.pointerY - half, 120)
+end
+
+local function createCursorSprite(ctx, x, y, theme)
+    local half = CURSOR_TEXTURE_SIZE / 2
+    local cursor = ctx.ui.raw("Texture", {
+        gui = true, x = x - half, y = y - half, z = 120,
+        sizeX = CURSOR_TEXTURE_SIZE, sizeY = CURSOR_TEXTURE_SIZE,
+        color = -1, opacity = 1, culling = false,
+        depthTest = false, depthMask = false
+    })
+    objectCall(cursor, "setImageSize", CURSOR_TEXTURE_SIZE, CURSOR_TEXTURE_SIZE)
+
+    local pixels = {}
+    local center = (CURSOR_TEXTURE_SIZE + 1) / 2
+    local purple = 0xFF000000 + (tonumber(theme.purple) or 0xA83CFF)
+    for py = 1, CURSOR_TEXTURE_SIZE do
+        pixels[py] = {}
+        for px = 1, CURSOR_TEXTURE_SIZE do
+            local dx, dy = px - center, py - center
+            local distanceSquared = dx * dx + dy * dy
+            local color = 0x00000000
+            if distanceSquared <= 49 then color = 0xFFFFFFFF end
+            if distanceSquared <= 30.25 then color = purple end
+            if distanceSquared <= 4 then color = 0xFFFFFFFF end
+            pixels[py][px] = color
+        end
+    end
+
+    -- One bulk call avoids sending hundreds of overlay updates. Retain a
+    -- compatibility fallback in case a server exposes only setPixel().
+    local setOk = objectCall(cursor, "setPixels", 1, 1, pixels)
+    if not setOk then
+        for py = 1, CURSOR_TEXTURE_SIZE do
+            for px = 1, CURSOR_TEXTURE_SIZE do
+                objectCall(cursor, "setPixel", px, py, pixels[py][px])
+            end
+        end
+    end
+    return cursor
 end
 
 local function updatePanel(ctx)
@@ -767,21 +807,10 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
-    -- Keep the radial menu's round three-layer shape, but make the storage
-    -- fill opaque. Its 0.18-alpha glow looks good over the world; over solid
-    -- inventory cells it mostly reproduces the cell colour and seems absent.
-    widgets.cursorGlow = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 97, radius = 4.75,
-        filled = true, color = theme.purple, opacity = 1
-    })
-    widgets.cursorRing = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 98, radius = 6,
-        filled = false, borderWidth = 2, color = theme.white, opacity = 1
-    })
-    widgets.cursorDot = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 99, radius = 1.7,
-        filled = true, color = theme.white, opacity = 1
-    })
+    -- Item objects in AP 0.8.2a can leak their render colour into following
+    -- Circle objects once setItem() is called. A single ARGB texture keeps the
+    -- same round white/purple cursor while isolating it from item rendering.
+    widgets.cursorSprite = createCursorSprite(ctx, gridX, gridY, theme)
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
 end
