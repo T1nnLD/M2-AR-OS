@@ -25,9 +25,6 @@ local QUEUE_VISIBLE_ROWS = 9
 local QUEUE_HISTORY_LIMIT = 18
 local QUEUE_RESULT_LIFETIME_MS = 6000
 local DETAIL_REFRESH_DELAY_MS = 400
-local CURSOR_GLYPH = "◉"
-local CURSOR_X_OFFSET = 5
-local CURSOR_Y_OFFSET = 6
 
 local STATUS_RU = {
     OFFLINE = "НЕ В СЕТИ",
@@ -402,9 +399,10 @@ end
 
 local function placeCursor(widgets)
     if not widgets or not state.pointerX or not state.pointerY then return end
-    objectCall(widgets.cursorReticle, "setPos",
-        state.pointerX - CURSOR_X_OFFSET,
-        state.pointerY - CURSOR_Y_OFFSET, 140)
+    -- Keep this identical to the radial menu cursor: glow, white ring and dot.
+    objectCall(widgets.cursorGlow, "setPos", state.pointerX, state.pointerY, 140)
+    objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 141)
+    objectCall(widgets.cursorDot, "setPos", state.pointerX, state.pointerY, 142)
 end
 
 local function updatePanel(ctx)
@@ -777,15 +775,21 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
-    -- AP 0.8.2a batches Circle, Rectangle and Texture in unordered render
-    -- passes without depth testing, so z alone cannot keep a Circle cursor
-    -- above the solid panel. Text has renderer weight 110 (solid panel/cell
-    -- objects use 100) and is guaranteed to be drawn last. The bullseye keeps
-    -- the radial menu's round ring/dot appearance and its shadow remains visible
-    -- over both bright item icons and dark cells.
-    widgets.cursorReticle = ctx.ui.text(
-        gridX - CURSOR_X_OFFSET, gridY - CURSOR_Y_OFFSET,
-        CURSOR_GLYPH, theme.white, 1.15, 140, true)
+    -- Deliberately use the exact same three Circle objects as radial_menu.lua.
+    -- They are created after every panel/item object and kept together while
+    -- moving, so an inventory refresh cannot replace the cursor with a glyph.
+    widgets.cursorGlow = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 140, radius = 8,
+        filled = true, color = theme.purple, opacity = 0.18
+    })
+    widgets.cursorRing = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 141, radius = 5,
+        filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
+    })
+    widgets.cursorDot = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 142, radius = 1.8,
+        filled = true, color = theme.purple, opacity = 1
+    })
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
 end

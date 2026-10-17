@@ -14,8 +14,12 @@ local ITEM_DETAIL_CACHE_VERSION = 2
 local ITEM_DETAIL_CACHE_FILE = "/m2os/item_detail_cache.db"
 local ITEM_DETAIL_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 local ITEM_DETAIL_CACHE_SAVE_DELAY_MS = 1000
-local BACKGROUND_INDEX_INTERVAL_MS = 500
+-- CC:Tweaked's parallel API is cooperative rather than true multi-core. Keep
+-- each indexing slice to one synchronous peripheral call, then yield back to
+-- the request loop so rednet and transfers remain responsive.
+local BACKGROUND_INDEX_INTERVAL_MS = 125
 local BACKGROUND_INDEX_START_DELAY_MS = 1500
+local BACKGROUND_INDEX_WORKER_TICK_SECONDS = 0.05
 
 local LOCAL_SIDES = {
     left = true, right = true, top = true, bottom = true,
@@ -497,7 +501,7 @@ local function scanInventories(state, detailCallLimit)
     }
 end
 
-local function runBackgroundIndex(state, now)
+local function runBackgroundIndex(state, now, detailCallLimit)
     if not state.backgroundIndexAt or now < state.backgroundIndexAt then return end
     if #state.inventories == 0 then
         state.backgroundIndexing = false
@@ -508,7 +512,7 @@ local function runBackgroundIndex(state, now)
         return
     end
 
-    local stock, detailsPending, progress = scanInventories(state)
+    local stock, detailsPending, progress = scanInventories(state, detailCallLimit)
     state.stockVariants = stock
     state.indexedSlots = progress.indexed
     state.indexTotal = progress.total
@@ -1076,42 +1080,70 @@ function Server.run(config)
     -- discovery and the basic stock list available immediately after reboot.
     scheduleBackgroundIndex(state, BACKGROUND_INDEX_START_DELAY_MS)
     printStatus(state)
-    local timer = os.startTimer(0.25)
+    local stopping = false
 
-    while true do
-        local event = { os.pullEventRaw() }
-        if event[1] == "terminate" then break end
-        if event[1] == "rednet_message" and event[4] == config.protocol
-                and type(event[3]) == "table" then
-            local sender, message = event[2], event[3]
-            if message.kind == "discover" and message.key == config.sharedKey then
-                state.lastMessage = ("#%d discover"):format(sender)
-                rednet.send(sender, {
-                    kind = "hello", key = config.sharedKey,
-                    name = "M2OS Create Bridge", version = 7,
-                    inventories = #state.inventories,
-                    detectedInventories = state.discoveredInventoryCount,
-                    incompatibleInventories = #state.incompatibleInventories,
-                    itemVaults = countInventoryKind(state.inventories, "item_vault"),
-                    ignoredLocalInventories = state.ignoredLocalInventories or 0
-                }, config.protocol)
-            elseif message.kind == "request" and message.id then
-                handleRequest(state, sender, message)
+    local function requestLoop()
+        local timer = os.startTimer(0.25)
+        while not stopping do
+            local event = { os.pullEventRaw() }
+            if event[1] == "terminate" then
+                stopping = true
+                return
             end
-            printStatus(state)
-        elseif event[1] == "timer" and event[2] == timer then
-            local now = util.epoch()
-            pollTransactions(state, now)
-            runBackgroundIndex(state, now)
-            saveItemDetailCache(state, false)
-            printStatus(state)
-            timer = os.startTimer(0.25)
-        elseif event[1] == "peripheral" or event[1] == "peripheral_detach" then
-            refreshPeripherals(state)
-            scheduleBackgroundIndex(state, 0)
-            printStatus(state)
+            if event[1] == "rednet_message" and event[4] == config.protocol
+                    and type(event[3]) == "table" then
+                local sender, message = event[2], event[3]
+                if message.kind == "discover" and message.key == config.sharedKey then
+                    state.lastMessage = ("#%d discover"):format(sender)
+                    rednet.send(sender, {
+                        kind = "hello", key = config.sharedKey,
+                        name = "M2OS Create Bridge", version = 7,
+                        inventories = #state.inventories,
+                        detectedInventories = state.discoveredInventoryCount,
+                        incompatibleInventories = #state.incompatibleInventories,
+                        itemVaults = countInventoryKind(state.inventories, "item_vault"),
+                        ignoredLocalInventories = state.ignoredLocalInventories or 0
+                    }, config.protocol)
+                elseif message.kind == "request" and message.id then
+                    handleRequest(state, sender, message)
+                end
+                printStatus(state)
+            elseif event[1] == "timer" and event[2] == timer then
+                local now = util.epoch()
+                pollTransactions(state, now)
+                saveItemDetailCache(state, false)
+                printStatus(state)
+                timer = os.startTimer(0.25)
+            elseif event[1] == "peripheral" or event[1] == "peripheral_detach" then
+                refreshPeripherals(state)
+                scheduleBackgroundIndex(state, 0)
+                printStatus(state)
+            end
         end
     end
+
+    local function indexingLoop()
+        while not stopping do
+            local now = util.epoch()
+            if state.backgroundIndexAt and now >= state.backgroundIndexAt then
+                -- One getItemDetail at most per slice. The following raw-event
+                -- wait is the explicit yield which lets requestLoop run.
+                runBackgroundIndex(state, now, 1)
+            end
+
+            local timer = os.startTimer(BACKGROUND_INDEX_WORKER_TICK_SECONDS)
+            while not stopping do
+                local event, id = os.pullEventRaw()
+                if event == "terminate" then
+                    stopping = true
+                    return
+                end
+                if event == "timer" and id == timer then break end
+            end
+        end
+    end
+
+    parallel.waitForAll(requestLoop, indexingLoop)
     saveItemDetailCache(state, true)
     if rednet.isOpen(modemName) then rednet.close(modemName) end
     term.clear()
