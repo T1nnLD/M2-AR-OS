@@ -109,6 +109,7 @@ local state = {
     transferQueue = {},
     transferSequence = 0,
     transferBusy = false,
+    queueSending = false,
     ctrlDown = false,
     shiftDown = false
 }
@@ -332,6 +333,28 @@ local function visibleQueueEntries()
     return visible
 end
 
+local function applyQueueReservations(rows)
+    local reserved = {}
+    for _, entry in ipairs(state.transferQueue) do
+        if entry.operation == "withdraw" then
+            local remaining = math.max(0, (tonumber(entry.requested) or 0)
+                - (tonumber(entry.moved) or 0))
+            local key = entry.variant or entry.name
+            if key and remaining > 0 then
+                reserved[key] = (reserved[key] or 0) + remaining
+            end
+        end
+    end
+    for index = #rows, 1, -1 do
+        local item = rows[index]
+        local key = item.variant or item.name
+        item.count = math.max(0, (tonumber(item.count) or 0)
+            - (reserved[key] or 0))
+        if item.count == 0 then table.remove(rows, index) end
+    end
+    return rows
+end
+
 local processTransferQueue
 
 local function removeQueueEntry(entry)
@@ -480,14 +503,23 @@ local function updatePanel(ctx)
     end
     setCached(widgets, "footerText", widgets.footer, "setContent",
         hoveredQueued and "ЛКМ:убрать  КОЛЕСО:+/-  CTRL:10 SHIFT:стак"
-            or storageView and "ЛКМ:1  CTRL:10  SHIFT:стак  I:инв."
+            or storageView and "ЛКМ:+1  SHIFT:стак  ENTER:отправить"
             or "КЛИК: положить стак  I:склад")
 
     if widgets.queueRows then
         local hidden = math.max(0, #state.transferQueue - #visibleQueue)
         setCached(widgets, "queueTitleText", widgets.queueTitle, "setContent",
-            ("ОЧЕРЕДЬ  %d%s"):format(#state.transferQueue,
+            (state.queueSending and "ОТПРАВКА  %d%s" or "ОЧЕРЕДЬ  %d%s"):format(#state.transferQueue,
                 hidden > 0 and ("  +" .. hidden) or ""))
+        local canSend = #state.transferQueue > 0 and not state.queueSending
+        setCached(widgets, "sendColor", widgets.sendButton, "setColor",
+            canSend and theme.purple or STORAGE_MUTED)
+        setCached(widgets, "sendOpacity", widgets.sendButton, "setOpacity",
+            canSend and 0.88 or 0.32)
+        setCached(widgets, "sendTextValue", widgets.sendText, "setContent",
+            state.queueSending and "..." or "ПУСК")
+        setCached(widgets, "sendTextColor", widgets.sendText, "setColor",
+            canSend and theme.white or theme.gray)
         for index, row in ipairs(widgets.queueRows) do
             local queued = visibleQueue[index]
             if queued then
@@ -730,14 +762,23 @@ local function drawPanel(ctx)
         widgets.queueRows = {}
         local queueSlotSize = 24
         local queueWidth = QUEUE_VISIBLE_ROWS * queueSlotSize
-        local queueX = x + (panelW - queueWidth) / 2
+        local sendGap, sendWidth = 4, 48
+        local queueX = x + (panelW - queueWidth - sendGap - sendWidth) / 2
         local queueY = gridY + gridRows * SLOT_SIZE + 13
         widgets.queueX = queueX
         widgets.queueY = queueY
         widgets.queueSlotSize = queueSlotSize
         widgets.queueWidth = queueWidth
+        widgets.sendX = queueX + queueWidth + sendGap
+        widgets.sendY = queueY
+        widgets.sendW = sendWidth
+        widgets.sendH = queueSlotSize - 2
         widgets.queueTitle = ctx.ui.text(queueX, queueY - 10,
             "ОЧЕРЕДЬ ЗАПРОСОВ  0", theme.gray, 0.53, 80)
+        widgets.sendButton = ctx.ui.rectangle(widgets.sendX, widgets.sendY,
+            widgets.sendW, widgets.sendH, STORAGE_MUTED, 0.32, 77)
+        widgets.sendText = ctx.ui.text(widgets.sendX + 5, widgets.sendY + 7,
+            "ПУСК", theme.gray, 0.55, 82)
         for index = 1, QUEUE_VISIBLE_ROWS do
             local slotX = queueX + (index - 1) * queueSlotSize
             local okItem, itemObject = pcall(ctx.ui.raw, "Item", {
@@ -792,6 +833,17 @@ local function refreshPlayerInventory(ctx)
                 local slot = tonumber(type(item) == "table" and item.slot)
                 if slot and item.name then slots[slot] = item end
             end
+            -- A queued deposit reserves its player slot until the user starts
+            -- delivery or removes the request from the cart.
+            for _, entry in ipairs(state.transferQueue) do
+                local slot = entry.operation == "deposit"
+                    and type(entry.payload) == "table"
+                    and tonumber(entry.payload.slot) or nil
+                if slot and (tonumber(entry.requested) or 0)
+                        ~= (tonumber(entry.moved) or 0) then
+                    slots[slot] = nil
+                end
+            end
             state.playerSlots = slots
             state.playerCapacity = tonumber(data and data.capacity) or 0
             if state.selectedPlayerSlot and not slots[state.selectedPlayerSlot] then
@@ -838,7 +890,7 @@ refresh = function(ctx, query)
     send(ctx, "stock", { query = query, limit = 128 }, function(ok, data, err)
         if generation ~= state.stockGeneration then return end
         if ok then
-            state.rows = sortedStock(data and data.items)
+            state.rows = applyQueueReservations(sortedStock(data and data.items))
             state.indexed = math.max(0, tonumber(data and data.indexed) or 0)
             state.indexTotal = math.max(state.indexed,
                 tonumber(data and data.indexTotal) or 0)
@@ -894,6 +946,7 @@ end
 
 processTransferQueue = function(ctx)
     if state.transferBusy then return true end
+    if not state.queueSending then return false end
     local queued
     for _, entry in ipairs(state.transferQueue) do
         if entry.status == "queued" then
@@ -901,7 +954,10 @@ processTransferQueue = function(ctx)
             break
         end
     end
-    if not queued then return false end
+    if not queued then
+        state.queueSending = false
+        return false
+    end
 
     local difference = (tonumber(queued.requested) or 0)
         - (tonumber(queued.moved) or 0)
@@ -937,6 +993,9 @@ processTransferQueue = function(ctx)
         payload = {
             name = queued.name, variant = queued.variant, count = batchCount
         }
+    elseif operation == "deposit" and type(queued.payload) == "table"
+            and queued.payload.hand == true then
+        payload = { hand = true, count = batchCount }
     elseif operation == "deposit" then
         payload = { name = queued.name, count = batchCount }
     else
@@ -957,19 +1016,46 @@ processTransferQueue = function(ctx)
             if not callbackOk then
                 queued.status = "failed"
                 queued.error = localizedError(callbackError)
+                queued.callback = nil
                 ctx.notify("Ошибка очереди: " .. localizedError(callbackError),
                     ctx.config.theme.red)
             end
         end
-        queued.callback = nil
         if requeue and queued.requested ~= queued.moved then
             queued.status = "queued"
         end
-        if queued.status == "done" then removeQueueEntry(queued) end
+        if queued.status == "done" then
+            queued.callback = nil
+            removeQueueEntry(queued)
+        end
         state.transferBusy = false
         refreshPanel(ctx)
         if not processTransferQueue(ctx) then refresh(ctx) end
     end)
+    return true
+end
+
+local function sendTransferQueue(ctx)
+    if state.transferBusy or state.queueSending then return false end
+    local ready = 0
+    for _, entry in ipairs(state.transferQueue) do
+        if entry.status ~= "pending"
+                and (tonumber(entry.requested) or 0)
+                    ~= (tonumber(entry.moved) or 0) then
+            entry.status = "queued"
+            entry.error = nil
+            ready = ready + 1
+        end
+    end
+    if ready == 0 then
+        ctx.notify("Очередь пуста", ctx.config.theme.amber)
+        return false
+    end
+    state.queueSending = true
+    state.searchAt = nil
+    state.status = "DELIVERY"
+    refreshPanel(ctx)
+    processTransferQueue(ctx)
     return true
 end
 
@@ -1020,6 +1106,7 @@ function app.start(ctx)
     state.transferQueue = {}
     state.transferSequence = 0
     state.transferBusy = false
+    state.queueSending = false
     state.ctrlDown = false
     state.shiftDown = false
     ctx.services.provide("storage", {
@@ -1102,9 +1189,8 @@ local function transfer(ctx, operation, count)
             state.selected = math.max(1, math.min(state.selected, #state.rows))
         end
     end
-    state.status = operation == "craft" and "CRAFTING" or "DELIVERY"
+    state.status = "ONLINE"
     refreshPanel(ctx)
-    processTransferQueue(ctx)
 end
 
 local function setView(ctx, view)
@@ -1148,9 +1234,8 @@ local function depositPlayerSlot(ctx, slot)
     state.inventoryGeneration = state.inventoryGeneration + 1
     state.playerSlots[slot] = nil
     state.selectedPlayerSlot = nil
-    state.status = "DEPOSIT"
+    state.status = "ONLINE"
     refreshPanel(ctx)
-    processTransferQueue(ctx)
 end
 
 local function depositHand(ctx)
@@ -1161,7 +1246,6 @@ local function depositHand(ctx)
             ok and ctx.config.theme.green or ctx.config.theme.red)
     end)
     refreshPanel(ctx)
-    processTransferQueue(ctx)
 end
 
 local function movePointer(ctx, dx, dy)
@@ -1264,8 +1348,9 @@ local function adjustQueueEntry(ctx, entry, amount)
     else
         entry.status = "queued"
     end
+    state.searchAt = util.epoch() + SEARCH_DELAY_MS
     refreshPanel(ctx)
-    processTransferQueue(ctx)
+    if state.queueSending then processTransferQueue(ctx) end
     return true
 end
 
@@ -1344,9 +1429,20 @@ function app.onEvent(ctx, event, sender, message, protocol)
             local widgets = state.widgets
             local queued = queueEntryAtPointer(widgets)
             if queued and button == 1 then
+                if state.queueSending or queued.status == "pending" then
+                    ctx.notify("Запрос уже отправляется",
+                        ctx.config.theme.amber)
+                    return true
+                end
                 removeQueueEntry(queued)
                 state.hoveredQueueSlot = nil
-                refreshPanel(ctx)
+                refresh(ctx, state.query)
+                return true
+            end
+            if widgets and widgets.sendButton and button == 1
+                    and pointerInside(widgets.sendX, widgets.sendY,
+                        widgets.sendW, widgets.sendH) then
+                sendTransferQueue(ctx)
                 return true
             end
             if widgets and button == 1
@@ -1447,7 +1543,8 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 return true
             end
             if code == keys.enter or code == keys.numPadEnter then
-                transfer(ctx, "withdraw", modifierAmount()) return true
+                sendTransferQueue(ctx)
+                return true
             end
             if code == keys.p then
                 depositHand(ctx)

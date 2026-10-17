@@ -58,24 +58,25 @@ English, or by registry ID. Prefix a mod with `@` (`@create`, or
 `@create шестерня`) to limit results to that mod. Search is case-insensitive for
 both Cyrillic and Latin text. `Backspace` removes one complete UTF-8 character,
 `Delete` clears the query, and `Enter` applies it immediately (otherwise it
-applies after a short delay). Left click takes one, `Ctrl` + left click takes
-ten, and `Shift` + left click takes a stack. Right click also takes a stack.
+applies after a short delay). Left click adds one item to the request queue,
+`Ctrl` + left click adds ten, and `Shift` + left click adds a stack. Right click
+also adds a stack.
 Select the `INVENTORY` tab at the top, or press `I`,
 to see the player's inventory. Clicking an occupied player slot deposits that
 slot's complete stack; depositing a single item is intentionally not supported.
-The clicked stack disappears immediately and both panels are reconciled with
-the server response. A partial transfer reports that storage is full and shows
-the moved/total count. Withdrawal behaves the same way when the player inventory
-has insufficient space. Middle click or `P` remains available as a shortcut for
-depositing up to 64 items matching the main-hand item. `C` requests one crafted
-item when optional Create crafting is enabled; the same `Ctrl`/`Shift` amount
-modifiers apply to `C` and `Enter`. Closing the Keyboard module
-closes the panel.
+The clicked stack is reserved in the queue. Press the purple `ПУСК` button
+or `Enter` to perform every queued transfer. A partial transfer reports that
+storage is full and shows the moved/total count; withdrawal behaves the same way
+when the player inventory has insufficient space. Middle click or `P` queues up
+to 64 items matching the main-hand item. `C` queues one crafted item when
+optional Create crafting is enabled; the same `Ctrl`/`Shift` amount modifiers
+apply to `C`. Closing the Keyboard module closes the panel.
 
 The request bar at the bottom mirrors Create's Stock Keeper and shows native
-item icons, editable amounts and their current state. Successfully completed
-transfers are removed automatically; failed or partial transfers remain visible
-until clicked. Scroll up/down over an entry to add/subtract one; hold `Ctrl` for
+item icons, editable amounts and their current state. Clicking an entry removes
+it before delivery. Successfully completed transfers are removed automatically;
+failed or partial transfers remain visible for retry. Scroll up/down over an
+entry to add/subtract one; hold `Ctrl` for
 ten or `Shift` for a stack. Enchanted and plain items are listed separately.
 Enchanted cells carry a `З` badge, and hovering
 them opens a tooltip with their enchantments. Bridge protocol v8 takes one
