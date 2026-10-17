@@ -401,6 +401,7 @@ local function scanInventories(state, detailCallLimit)
     local merged = {}
     local detailCalls = 0
     local detailsPending = false
+    local indexedSlots, indexTotal = 0, 0
     local seenCacheKeys = {}
     local scannedInventories = {}
     local maxCacheAge = tonumber(state.config.itemDetailCacheMaxAge)
@@ -424,6 +425,7 @@ local function scanInventories(state, detailCallLimit)
                     local detailPending = false
                     if needsItemDetail(stack, state.config)
                             and type(inventory.peripheral.getItemDetail) == "function" then
+                        indexTotal = indexTotal + 1
                         local cacheKey = itemDetailCacheKey(inventory.name, slot)
                         local signature = itemStackSignature(stack)
                         seenCacheKeys[cacheKey] = true
@@ -432,6 +434,7 @@ local function scanInventories(state, detailCallLimit)
                                 and (maxCacheAge <= 0 or util.epoch() - cached.time
                                     < maxCacheAge * 1000) then
                             detail = cached.detail
+                            indexedSlots = indexedSlots + 1
                         elseif detailCalls < maxDetailCalls then
                             detailCalls = detailCalls + 1
                             local detailOk, value = pcall(
@@ -446,6 +449,7 @@ local function scanInventories(state, detailCallLimit)
                                 time = util.epoch()
                             }
                             markItemDetailCacheDirty(state)
+                            indexedSlots = indexedSlots + 1
                         else
                             detailPending = true
                             detailsPending = true
@@ -487,7 +491,10 @@ local function scanInventories(state, detailCallLimit)
         end
     end
     if cachePruned then markItemDetailCacheDirty(state) end
-    return merged, detailsPending
+    return merged, detailsPending, {
+        indexed = indexedSlots,
+        total = indexTotal
+    }
 end
 
 local function runBackgroundIndex(state, now)
@@ -496,11 +503,15 @@ local function runBackgroundIndex(state, now)
         state.backgroundIndexing = false
         state.backgroundIndexAt = nil
         state.stockVariants = {}
+        state.indexedSlots = 0
+        state.indexTotal = 0
         return
     end
 
-    local stock, detailsPending = scanInventories(state)
+    local stock, detailsPending, progress = scanInventories(state)
     state.stockVariants = stock
+    state.indexedSlots = progress.indexed
+    state.indexTotal = progress.total
     state.backgroundIndexing = detailsPending
     state.backgroundIndexAt = detailsPending
         and (now + BACKGROUND_INDEX_INTERVAL_MS) or nil
@@ -732,7 +743,10 @@ local function printStatus(state)
     local indexStatus = {}
     if state.backgroundIndexing then indexStatus[#indexStatus + 1] = "indexing" end
     if state.itemDetailCacheDirty then indexStatus[#indexStatus + 1] = "saving" end
-    print(("Index:   %d cached%s"):format(itemDetailCacheCount(state),
+    print(("Index:   %d/%d slots, %d cached%s"):format(
+        tonumber(state.indexedSlots) or 0,
+        tonumber(state.indexTotal) or 0,
+        itemDetailCacheCount(state),
         #indexStatus > 0 and (" (" .. table.concat(indexStatus, ", ") .. ")") or ""))
     if state.itemDetailCacheError then
         print("Cache:   " .. util.short(state.itemDetailCacheError, 38))
@@ -785,8 +799,10 @@ local function handleRequest(state, sender, message)
         -- Return current counts and all already cached metadata immediately;
         -- missing display names/enchantments are completed by the background
         -- indexer and advertised through detailsPending.
-        local stock, detailsPending = scanInventories(state, 0)
+        local stock, detailsPending, progress = scanInventories(state, 0)
         state.stockVariants = stock
+        state.indexedSlots = progress.indexed
+        state.indexTotal = progress.total
         if detailsPending then
             scheduleBackgroundIndex(state, BACKGROUND_INDEX_INTERVAL_MS)
         else
@@ -797,7 +813,9 @@ local function handleRequest(state, sender, message)
             items = normalizeStock(stock, payload.query, limit),
             inventories = #state.inventories,
             itemVaults = countInventoryKind(state.inventories, "item_vault"),
-            detailsPending = detailsPending
+            detailsPending = detailsPending,
+            indexed = progress.indexed,
+            indexTotal = progress.total
         })
     elseif operation == "deposit" then
         if not state.manager then
@@ -1050,7 +1068,8 @@ function Server.run(config)
         itemDetailCache = loadItemDetailCache(config),
         itemDetailCacheDirty = false, itemDetailCacheSaveAt = nil,
         itemDetailCacheError = nil, stockVariants = {},
-        backgroundIndexing = false, backgroundIndexAt = nil
+        backgroundIndexing = false, backgroundIndexAt = nil,
+        indexedSlots = 0, indexTotal = 0
     }
     refreshPeripherals(state)
     -- Enter the event loop before the first getItemDetail batch. This makes

@@ -88,6 +88,8 @@ local state = {
     view = "storage",
     status = "OFFLINE",
     statusDetail = nil,
+    indexed = 0,
+    indexTotal = 0,
     legacyServerId = nil,
     selected = 1,
     offset = 1,
@@ -414,8 +416,13 @@ local function updatePanel(ctx)
         statusColor = theme.amber
     end
     if state.status == "ERROR" then statusColor = theme.red end
-    setCached(widgets, "statusText", widgets.status, "setContent",
-        STATUS_RU[state.status] or state.status)
+    local statusText = STATUS_RU[state.status] or state.status
+    if state.indexTotal > 0 and state.status == "INDEXING" then
+        statusText = ("ИНДЕКС %d/%d"):format(state.indexed, state.indexTotal)
+    elseif state.indexTotal > 0 and state.status == "ONLINE" then
+        statusText = ("ГОТОВО %d/%d"):format(state.indexed, state.indexTotal)
+    end
+    setCached(widgets, "statusText", widgets.status, "setContent", statusText)
     setCached(widgets, "statusColor", widgets.status, "setColor", statusColor)
 
     local storageView = state.view == "storage"
@@ -690,8 +697,8 @@ local function drawPanel(ctx)
     widgets.inventoryTab = ctx.ui.text(x + 74, y + 7, "ИНВЕНТАРЬ", theme.gray, 0.78, 75)
     widgets.tabMarker = ctx.ui.rectangle(
         widgets.storageTabCenter - 27, y + 18, 54, 2, theme.purple, 1, 77)
-    widgets.status = ctx.ui.text(x + panelW - 70, y + 8, state.status,
-        theme.gray, 0.75, 75)
+    widgets.status = ctx.ui.text(x + panelW - 96, y + 8, state.status,
+        theme.gray, 0.68, 75)
     widgets.searchBackground = ctx.ui.rectangle(
         gridX, y + 22, gridW, 15, STORAGE_MUTED, 0.52, 73)
     widgets.searchText = ctx.ui.text(
@@ -844,6 +851,9 @@ local function refresh(ctx, query)
         if generation ~= state.stockGeneration then return end
         if ok then
             state.rows = sortedStock(data and data.items)
+            state.indexed = math.max(0, tonumber(data and data.indexed) or 0)
+            state.indexTotal = math.max(state.indexed,
+                tonumber(data and data.indexTotal) or 0)
             if state.appliedQuery ~= query then
                 state.selected, state.offset = 1, 1
             else
@@ -932,6 +942,8 @@ function app.start(ctx)
     state.serverId = ctx.config.storage.serverId
     state.serverVersion = nil
     state.legacyServerId = nil
+    state.indexed = 0
+    state.indexTotal = 0
     state.pending = {}
     state.drawAt = nil
     state.widgets = nil
