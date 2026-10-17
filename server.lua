@@ -11,6 +11,7 @@ local ITEM_DETAIL_CACHE_VERSION = 1
 local ITEM_DETAIL_CACHE_FILE = "/m2os/item_detail_cache.db"
 local ITEM_DETAIL_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 local ITEM_DETAIL_CACHE_SAVE_DELAY_MS = 1000
+local BACKGROUND_INDEX_INTERVAL_MS = 500
 
 local LOCAL_SIDES = {
     left = true, right = true, top = true, bottom = true,
@@ -308,7 +309,19 @@ end
 
 local function markItemDetailCacheDirty(state)
     state.itemDetailCacheDirty = true
-    state.itemDetailCacheSaveAt = util.epoch() + ITEM_DETAIL_CACHE_SAVE_DELAY_MS
+    -- Keep the first deadline. Moving it after every small indexing batch
+    -- would prevent a continuously growing cache from ever being saved.
+    if not state.itemDetailCacheSaveAt then
+        state.itemDetailCacheSaveAt = util.epoch() + ITEM_DETAIL_CACHE_SAVE_DELAY_MS
+    end
+end
+
+local function scheduleBackgroundIndex(state, delay)
+    state.backgroundIndexing = true
+    local requestedAt = util.epoch() + (tonumber(delay) or 0)
+    if not state.backgroundIndexAt or requestedAt < state.backgroundIndexAt then
+        state.backgroundIndexAt = requestedAt
+    end
 end
 
 local function saveItemDetailCache(state, force)
@@ -350,6 +363,9 @@ end
 
 local function invalidateChangedItemDetails(state, inventory)
     if not inventory then return end
+    -- Reindex even if this was a previously empty slot and therefore had no
+    -- cache entry to invalidate.
+    scheduleBackgroundIndex(state, 0)
     local ok, slots = pcall(inventory.peripheral.list)
     if not ok or type(slots) ~= "table" then return end
     local changed = false
@@ -458,6 +474,22 @@ local function scanInventories(state)
     end
     if cachePruned then markItemDetailCacheDirty(state) end
     return merged, detailsPending
+end
+
+local function runBackgroundIndex(state, now)
+    if not state.backgroundIndexAt or now < state.backgroundIndexAt then return end
+    if #state.inventories == 0 then
+        state.backgroundIndexing = false
+        state.backgroundIndexAt = nil
+        state.stockVariants = {}
+        return
+    end
+
+    local stock, detailsPending = scanInventories(state)
+    state.stockVariants = stock
+    state.backgroundIndexing = detailsPending
+    state.backgroundIndexAt = detailsPending
+        and (now + BACKGROUND_INDEX_INTERVAL_MS) or nil
 end
 
 local function movedAmount(value)
@@ -683,8 +715,11 @@ local function printStatus(state)
         print(("Ignored: %d side inventory; use wired name"):format(
             state.ignoredLocalInventories))
     end
+    local indexStatus = {}
+    if state.backgroundIndexing then indexStatus[#indexStatus + 1] = "indexing" end
+    if state.itemDetailCacheDirty then indexStatus[#indexStatus + 1] = "saving" end
     print(("Index:   %d cached%s"):format(itemDetailCacheCount(state),
-        state.itemDetailCacheDirty and " (saving)" or ""))
+        #indexStatus > 0 and (" (" .. table.concat(indexStatus, ", ") .. ")") or ""))
     if state.itemDetailCacheError then
         print("Cache:   " .. util.short(state.itemDetailCacheError, 38))
     end
@@ -734,6 +769,12 @@ local function handleRequest(state, sender, message)
         local limit = math.max(1, math.min(tonumber(payload.limit) or 128, 128))
         local stock, detailsPending = scanInventories(state)
         state.stockVariants = stock
+        if detailsPending then
+            scheduleBackgroundIndex(state, BACKGROUND_INDEX_INTERVAL_MS)
+        else
+            state.backgroundIndexing = false
+            state.backgroundIndexAt = nil
+        end
         response(config, sender, message.id, true, {
             items = normalizeStock(stock, payload.query, limit),
             inventories = #state.inventories,
@@ -990,9 +1031,12 @@ function Server.run(config)
         transactions = {}, lastMessage = nil,
         itemDetailCache = loadItemDetailCache(config),
         itemDetailCacheDirty = false, itemDetailCacheSaveAt = nil,
-        itemDetailCacheError = nil, stockVariants = {}
+        itemDetailCacheError = nil, stockVariants = {},
+        backgroundIndexing = false, backgroundIndexAt = nil
     }
     refreshPeripherals(state)
+    scheduleBackgroundIndex(state, 0)
+    runBackgroundIndex(state, util.epoch())
     printStatus(state)
     local timer = os.startTimer(0.25)
 
@@ -1020,11 +1064,13 @@ function Server.run(config)
         elseif event[1] == "timer" and event[2] == timer then
             local now = util.epoch()
             pollTransactions(state, now)
+            runBackgroundIndex(state, now)
             saveItemDetailCache(state, false)
             printStatus(state)
             timer = os.startTimer(0.25)
         elseif event[1] == "peripheral" or event[1] == "peripheral_detach" then
             refreshPeripherals(state)
+            scheduleBackgroundIndex(state, 0)
             printStatus(state)
         end
     end

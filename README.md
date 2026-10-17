@@ -80,6 +80,8 @@ batches is still being indexed. The selected variant is withdrawn from its
 exact inventory slot instead of matching only its registry name.
 
 The bridge stores compact indexed metadata in `/m2os/item_detail_cache.db`.
+It starts indexing connected storage immediately after launch and continues in
+small background batches, so nobody has to keep the storage window open.
 The cache survives bridge and server restarts, is invalidated for changed
 inventory slots, and is revalidated after seven days by default. Configure or
 disable it with `itemDetailCacheFile` and `itemDetailCacheMaxAge` in

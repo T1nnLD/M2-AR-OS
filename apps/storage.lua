@@ -1263,12 +1263,10 @@ function app.onEvent(ctx, event, sender, message, protocol)
             return true
         elseif event == "key" and keys then
             local code = tonumber(sender)
-            if keys.i and code == keys.i then
-                setView(ctx, state.view == "storage" and "inventory" or "storage")
-                return true
-            end
-            if state.view ~= "storage" then return true end
-            if state.searchActive then
+            -- While the search field is active, every printable key belongs
+            -- to the query. In particular, I must not trigger the Inventory
+            -- tab shortcut before the following char event arrives.
+            if state.view == "storage" and state.searchActive then
                 if code == keys.backspace then
                     state.query = util.utf8Backspace(state.query)
                     scheduleSearch(ctx)
@@ -1286,6 +1284,11 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 end
                 return true
             end
+            if keys.i and code == keys.i then
+                setView(ctx, state.view == "storage" and "inventory" or "storage")
+                return true
+            end
+            if state.view ~= "storage" then return true end
             if code == keys.f then
                 state.searchActive = true
                 state.ignoreNextChar = true
