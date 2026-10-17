@@ -2,7 +2,7 @@
 -- Usage: wget run <raw-url>/install.lua [glasses|server|all]
 
 local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/"
-local INSTALLER_VERSION = "2.1-cache-safe"
+local INSTALLER_VERSION = "2.2-index-safety"
 local args = { ... }
 
 local cacheBuster = tostring(os.clock())
@@ -73,7 +73,8 @@ local glasses = {
 local server = {
     { "server.lua", "/m2os/server.lua" },
     { "server_config.lua", "/m2os/server_config.lua", preserve = true },
-    { "bin/m2os_server.lua", "/m2os_server.lua" }
+    { "bin/m2os_server.lua", "/m2os_server.lua" },
+    { "bin/m2os_server_startup.lua", "/startup/m2os_server.lua" }
 }
 
 local files, known = {}, {}

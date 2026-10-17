@@ -22,21 +22,22 @@ return {
     -- are connected to the same bridge.
     deduplicateItemVaults = true,
 
-    -- Detailed NBT/enchantment reads are deliberately throttled because too
-    -- many getItemDetail calls in one request can trip a server watchdog.
-    -- Keep this at 4 (8 is the hard safety limit).
-    itemDetailCallsPerScan = 4,
+    -- One synchronous getItemDetail call is made per interval. These
+    -- conservative defaults protect a dedicated server during startup.
+    backgroundIndexStartDelayMs = 10000,
+    backgroundIndexIntervalMs = 2000,
 
-    -- Cache display names for every occupied storage slot. With CC: Tweaked
+    -- Cache the display name of every unique item variant. With CC: Tweaked
     -- Unicode Support this uses the localized name supplied by the server and
     -- avoids installing a dictionary containing the entire modpack.
     indexAllItemNames = true,
 
-    -- Persistent compact metadata cache. It survives bridge restarts and is
-    -- invalidated when a slot's item/count/NBT signature changes. Entries are
-    -- periodically rechecked as protection against mods which hide NBT from
-    -- list(). Set max age to 0 to keep unchanged entries indefinitely.
+    -- Persistent compact metadata cache, shared by identical item variants.
+    -- The tiny write-ahead journal prevents one malformed item detail from
+    -- crashing the server again after restart. Set max age to 0 to keep
+    -- unchanged entries indefinitely.
     itemDetailCacheFile = "/m2os/item_detail_cache.db",
+    itemDetailInflightFile = "/m2os/item_detail_inflight.db",
     itemDetailCacheMaxAge = 7 * 24 * 60 * 60,
 
     -- Optional registry-name fragments for unusual modded enchantable items.

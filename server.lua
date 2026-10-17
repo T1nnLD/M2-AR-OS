@@ -10,6 +10,7 @@ local Server = {}
 -- signature. The loader migrates v2, while older pre-Unicode data is discarded.
 local ITEM_DETAIL_CACHE_VERSION = 3
 local ITEM_DETAIL_CACHE_FILE = "/m2os/item_detail_cache.db"
+local ITEM_DETAIL_INFLIGHT_FILE = "/m2os/item_detail_inflight.db"
 local ITEM_DETAIL_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 -- Serialising a growing cache every second is expensive on a CC computer and
 -- can add another burst of work while a large vault is being indexed.
@@ -17,18 +18,30 @@ local ITEM_DETAIL_CACHE_SAVE_DELAY_MS = 10000
 -- CC:Tweaked's parallel API is cooperative rather than true multi-core. Keep
 -- each indexing slice to one synchronous peripheral call, then yield back to
 -- the request loop so rednet and transfers remain responsive.
-local BACKGROUND_INDEX_INTERVAL_MS = 300
-local BACKGROUND_INDEX_START_DELAY_MS = 1500
+local BACKGROUND_INDEX_INTERVAL_MS = 2000
+local BACKGROUND_INDEX_START_DELAY_MS = 10000
 local BACKGROUND_INDEX_WORKER_TICK_SECONDS = 0.10
--- Discovery probes item vaults and asks Inventory Manager whether each target
--- is reachable. It is intentionally throttled: stock polling must not repeat
--- those comparatively expensive peripheral calls on every request.
-local INVENTORY_REFRESH_INTERVAL_MS = 5000
+-- A wired network may emit several peripheral events while its chunks are
+-- loading. Coalesce that burst so a large vault is not scanned repeatedly
+-- during the most fragile part of a dedicated-server restart.
+local PERIPHERAL_REFRESH_DELAY_MS = 3000
 
 local LOCAL_SIDES = {
     left = true, right = true, top = true, bottom = true,
     front = true, back = true
 }
+
+local function backgroundIndexInterval(state)
+    return math.max(500, math.min(30000,
+        tonumber(state.config.backgroundIndexIntervalMs)
+            or BACKGROUND_INDEX_INTERVAL_MS))
+end
+
+local function backgroundIndexStartDelay(state)
+    return math.max(0, math.min(120000,
+        tonumber(state.config.backgroundIndexStartDelayMs)
+            or BACKGROUND_INDEX_START_DELAY_MS))
+end
 
 local function trusted(config, sender)
     if not config.trustedIds or #config.trustedIds == 0 then return true end
@@ -131,20 +144,25 @@ local function vaultSnapshot(inventory)
     local okSize, size = pcall(inventory.size)
     local okList, slots = pcall(inventory.list)
     if not okSize or not okList or type(slots) ~= "table" then return nil end
-    local parts = { tostring(size) }
-    local indexes = {}
-    for slot in pairs(slots) do indexes[#indexes + 1] = slot end
-    table.sort(indexes, function(a, b) return tonumber(a) < tonumber(b) end)
-    for _, slot in ipairs(indexes) do
-        local stack = slots[slot]
-        if type(stack) == "table" then
-            parts[#parts + 1] = table.concat({
-                tostring(slot), tostring(stack.name or ""),
-                tostring(stack.count or 0), tostring(stack.nbt or "")
-            }, ":")
+    -- Fingerprint unique variants rather than concatenating every physical
+    -- slot. Large Create vaults often contain thousands of identical stacks.
+    local totals, keys = {}, {}
+    for _, stack in pairs(slots) do
+        if type(stack) == "table" and stack.name then
+            local key = table.concat({
+                tostring(stack.name), tostring(stack.nbt or ""),
+                tostring(stack.damage or "")
+            }, "|")
+            if totals[key] == nil then keys[#keys + 1] = key end
+            totals[key] = (totals[key] or 0) + (tonumber(stack.count) or 0)
         end
     end
-    return table.concat(parts, "|")
+    table.sort(keys)
+    local parts = { tostring(size) }
+    for _, key in ipairs(keys) do
+        parts[#parts + 1] = key .. "=" .. tostring(totals[key])
+    end
+    return table.concat(parts, "\n"), slots
 end
 
 local function locateInventories(config)
@@ -172,9 +190,11 @@ local function locateInventories(config)
                     local kind = isItemVault(name, types)
                         and "item_vault" or "inventory"
                     local duplicate = false
+                    local initialSlots
                     if kind == "item_vault"
                             and config.deduplicateItemVaults ~= false then
-                        local snapshot = vaultSnapshot(wrapped)
+                        local snapshot
+                        snapshot, initialSlots = vaultSnapshot(wrapped)
                         if snapshot and vaultSnapshots[snapshot] then
                             duplicate = true
                             duplicateEndpoints = duplicateEndpoints + 1
@@ -185,7 +205,8 @@ local function locateInventories(config)
                     if not duplicate then inventories[#inventories + 1] = {
                         name = name,
                         peripheral = wrapped,
-                        kind = kind
+                        kind = kind,
+                        initialSlots = initialSlots
                     } end
                 end
             end
@@ -249,10 +270,9 @@ local ENCHANTABLE_NAME_SUFFIXES = {
 local function needsItemDetail(stack, config)
     if type(stack) ~= "table" then return false end
     config = type(config) == "table" and config or {}
-    -- list() normally exposes only registry id/count/NBT. Indexing the compact
-    -- detail for every occupied slot lets Unicode-aware servers supply the
-    -- player's real localized display name without shipping an enormous
-    -- dictionary for the whole modpack.
+    -- list() normally exposes only registry id/count/NBT. Indexing one compact
+    -- detail per unique variant lets Unicode-aware servers supply the player's
+    -- real localized display name without shipping an enormous dictionary.
     if config.indexAllItemNames ~= false then return true end
     if stack.nbt ~= nil then return true end
     local name = tostring(stack.name or ""):lower()
@@ -281,6 +301,13 @@ local function itemDetailCachePath(config)
     if config.itemDetailCacheFile == false then return nil end
     local path = tostring(config.itemDetailCacheFile or ITEM_DETAIL_CACHE_FILE)
     return path ~= "" and path or ITEM_DETAIL_CACHE_FILE
+end
+
+local function itemDetailInflightPath(config)
+    if config.itemDetailCacheFile == false then return nil end
+    local path = tostring(config.itemDetailInflightFile
+        or ITEM_DETAIL_INFLIGHT_FILE)
+    return path ~= "" and path or ITEM_DETAIL_INFLIGHT_FILE
 end
 
 local function itemStackSignature(stack)
@@ -327,6 +354,15 @@ local function loadItemDetailCache(config)
     return entries, raw.version ~= ITEM_DETAIL_CACHE_VERSION
 end
 
+local function loadItemDetailInflight(config)
+    local path = itemDetailInflightPath(config)
+    if not path then return nil end
+    local value = util.readTable(path, nil)
+    if type(value) ~= "table" or type(value.signature) ~= "string"
+            or type(value.stack) ~= "table" then return nil end
+    return value
+end
+
 local function markItemDetailCacheDirty(state)
     state.itemDetailCacheDirty = true
     -- Keep the first deadline. Moving it after every small indexing batch
@@ -360,6 +396,32 @@ local function safeWriteTable(path, value)
     local callOk, written, err = pcall(util.writeTable, path, value)
     if not callOk then return false, tostring(written) end
     return written, err
+end
+
+local function writeItemDetailInflight(state, task)
+    local path = itemDetailInflightPath(state.config)
+    if not path then return true end
+    local parent = fs.getDir(path)
+    if parent ~= "" and not fs.exists(parent) then fs.makeDir(parent) end
+    local value = {
+        signature = task.signature,
+        stack = task.stack,
+        time = util.epoch()
+    }
+    local ok, err = safeWriteTable(path, value)
+    if ok then state.itemDetailInflight = value end
+    return ok, err
+end
+
+local function clearItemDetailInflight(state)
+    local path = itemDetailInflightPath(state.config)
+    if path and fs.exists(path) then
+        local ok, err = pcall(fs.delete, path)
+        if not ok then return false, tostring(err) end
+    end
+    state.itemDetailInflight = nil
+    state.itemDetailInflightRecovered = false
+    return true
 end
 
 local function saveItemDetailCache(state, force)
@@ -422,7 +484,8 @@ local function invalidateChangedItemDetails(state, inventory)
     -- Details are cached by immutable item signature rather than by slot, so a
     -- move cannot invalidate an existing entry. Rebuild the work snapshot to
     -- discover any genuinely new variant introduced by the transfer.
-    scheduleBackgroundIndex(state, 1000)
+    inventory.initialSlots = nil
+    scheduleBackgroundIndex(state, backgroundIndexInterval(state))
 end
 
 local function itemDetailCacheCount(state)
@@ -523,7 +586,13 @@ local function prepareBackgroundIndex(state)
     -- This is the only full inventory scan performed by one indexing run.
     -- Subsequent worker slices consume this fixed queue without list().
     for _, inventory in ipairs(state.inventories) do
-        local ok, slots = pcall(inventory.peripheral.list)
+        local ok, slots
+        if type(inventory.initialSlots) == "table" then
+            ok, slots = true, inventory.initialSlots
+            inventory.initialSlots = nil
+        else
+            ok, slots = pcall(inventory.peripheral.list)
+        end
         if ok and type(slots) == "table" then
             for _, slot in ipairs(sortedSlotIndexes(slots)) do
                 local stack = slots[slot]
@@ -539,6 +608,27 @@ local function prepareBackgroundIndex(state)
                         if cached and cached.signature == signature
                                 and (maxCacheAge <= 0 or now - cached.time
                                     < maxCacheAge * 1000) then
+                            indexedSlots = indexedSlots + 1
+                            if state.itemDetailInflight
+                                    and state.itemDetailInflight.signature
+                                        == signature then
+                                state.itemDetailInflightRecovered = true
+                            end
+                        elseif state.itemDetailInflight
+                                and state.itemDetailInflight.signature == signature then
+                            -- The previous Minecraft/server process vanished
+                            -- while this exact Java peripheral call was active.
+                            -- Never repeat it automatically: one malformed item
+                            -- must not create a permanent reboot/crash loop.
+                            state.itemDetailCache[cacheKey] = {
+                                signature = signature,
+                                detail = compactItemDetail(stack, stack),
+                                time = now
+                            }
+                            state.itemDetailInflightRecovered = true
+                            state.skippedItemDetails =
+                                (tonumber(state.skippedItemDetails) or 0) + 1
+                            markItemDetailCacheDirty(state)
                             indexedSlots = indexedSlots + 1
                         else
                             -- Keep one compact task per unique item variant,
@@ -573,6 +663,13 @@ local function prepareBackgroundIndex(state)
     end
     if cachePruned then markItemDetailCacheDirty(state) end
 
+    if state.itemDetailInflight
+            and not seenSignatures[state.itemDetailInflight.signature] then
+        -- The item vanished while Minecraft was restarting. The stale journal
+        -- can be removed without attempting the old peripheral call.
+        state.itemDetailInflightRecovered = true
+    end
+
     state.backgroundIndexTasks = tasks
     state.backgroundIndexCursor = 1
     state.indexedSlots = indexedSlots
@@ -593,6 +690,17 @@ local function runBackgroundIndex(state, now)
     end
 
     if not state.backgroundIndexTasks then prepareBackgroundIndex(state) end
+    if state.itemDetailInflightRecovered then
+        if saveItemDetailCache(state, true) then
+            clearItemDetailInflight(state)
+        else
+            -- Never continue and overwrite the crash journal if progress could
+            -- not be committed. The stock endpoint remains usable with IDs.
+            state.backgroundIndexing = false
+            state.backgroundIndexAt = nil
+            return
+        end
+    end
     local tasks = state.backgroundIndexTasks or {}
     local cursor = tonumber(state.backgroundIndexCursor) or 1
     local task = tasks[cursor]
@@ -604,12 +712,27 @@ local function runBackgroundIndex(state, now)
         return
     end
 
-    -- Exactly one synchronous detail call per slice. CC:Tweaked parallel is
-    -- cooperative, so this bound is what protects the Minecraft server tick.
+    -- Write-ahead journal: if this Java call kills the Minecraft process, the
+    -- next bridge start quarantines this signature instead of crashing again.
     local detail = task.stack
-    local detailOk, value = pcall(
-        task.inventory.peripheral.getItemDetail, task.slot)
-    if detailOk and type(value) == "table" then detail = value end
+    local journalOk, journalError = writeItemDetailInflight(state, task)
+    if journalOk then
+        local detailOk, value = pcall(
+            task.inventory.peripheral.getItemDetail, task.slot)
+        if detailOk and type(value) == "table" then
+            detail = value
+        elseif not detailOk then
+            state.skippedItemDetails =
+                (tonumber(state.skippedItemDetails) or 0) + 1
+            state.lastIndexWarning = tostring(value)
+        end
+    else
+        -- Without a durable journal it is unsafe to enter a peripheral call
+        -- which may take the whole dedicated server down.
+        state.skippedItemDetails =
+            (tonumber(state.skippedItemDetails) or 0) + 1
+        state.lastIndexWarning = "journal: " .. tostring(journalError)
+    end
     detail = compactItemDetail(task.stack, detail)
     state.itemDetailCache[task.cacheKey] = {
         signature = task.signature,
@@ -617,6 +740,12 @@ local function runBackgroundIndex(state, now)
         time = util.epoch()
     }
     markItemDetailCacheDirty(state)
+    if not saveItemDetailCache(state, true) then
+        state.backgroundIndexing = false
+        state.backgroundIndexAt = nil
+        return
+    end
+    if journalOk then clearItemDetailInflight(state) end
     state.indexedSlots = math.min(state.indexTotal,
         (tonumber(state.indexedSlots) or 0) + 1)
     state.backgroundIndexCursor = cursor + 1
@@ -628,7 +757,7 @@ local function runBackgroundIndex(state, now)
         state.backgroundIndexCursor = 1
     else
         state.backgroundIndexing = true
-        state.backgroundIndexAt = now + BACKGROUND_INDEX_INTERVAL_MS
+        state.backgroundIndexAt = now + backgroundIndexInterval(state)
     end
 end
 
@@ -715,20 +844,19 @@ local function compatibleInventories(manager, inventories)
     return compatible, rejected, issue
 end
 
-local function refreshInventories(state, force)
-    local now = util.epoch()
-    if not force and state.nextInventoryRefreshAt
-            and now < state.nextInventoryRefreshAt then return end
+local function refreshInventories(state)
     local discovered
     discovered, state.duplicateEndpoints, state.ignoredLocalInventories
         = locateInventories(state.config)
     state.discoveredInventoryCount = #discovered
     state.inventories, state.incompatibleInventories, state.inventoryIssue
         = compatibleInventories(state.manager, discovered)
-    state.nextInventoryRefreshAt = now + INVENTORY_REFRESH_INTERVAL_MS
 end
 
 local function noInventoryError(state)
+    if state.peripheralRefreshAt then
+        return "peripheral network is still settling; retry in a few seconds"
+    end
     if #(state.incompatibleInventories or {}) > 0 then
         if state.inventoryIssue == "different_network" then
             return "storage and Inventory Manager are on different wired networks; connect both to the same cable"
@@ -750,7 +878,7 @@ end
 local function refreshPeripherals(state)
     state.ticker = locateTicker()
     state.manager, state.managerName = locateManager()
-    refreshInventories(state, true)
+    refreshInventories(state)
 end
 
 local function countInventoryKind(inventories, kind)
@@ -862,13 +990,20 @@ local function printStatus(state)
     local indexStatus = {}
     if state.backgroundIndexing then indexStatus[#indexStatus + 1] = "indexing" end
     if state.itemDetailCacheDirty then indexStatus[#indexStatus + 1] = "saving" end
-    print(("Index:   %d/%d slots, %d cached%s"):format(
+    print(("Index:   %d/%d variants, %d cached%s"):format(
         tonumber(state.indexedSlots) or 0,
         tonumber(state.indexTotal) or 0,
         itemDetailCacheCount(state),
         #indexStatus > 0 and (" (" .. table.concat(indexStatus, ", ") .. ")") or ""))
     if state.itemDetailCacheError then
         print("Cache:   " .. util.short(state.itemDetailCacheError, 38))
+    end
+    if (tonumber(state.skippedItemDetails) or 0) > 0 then
+        print(("Safety:  %d risky detail(s) skipped"):format(
+            state.skippedItemDetails))
+    end
+    if state.lastIndexWarning then
+        print("Index:   " .. util.short(state.lastIndexWarning, 38))
     end
     print("Pending: " .. tostring(#state.transactions))
     print("")
@@ -916,7 +1051,6 @@ local function handleRequest(state, sender, message)
             indexTotal = tonumber(state.indexTotal) or 0
         })
     elseif operation == "stock" then
-        refreshInventories(state)
         if #state.inventories == 0 then
             response(config, sender, message.id, false, nil, noInventoryError(state))
             return
@@ -931,7 +1065,7 @@ local function handleRequest(state, sender, message)
         state.indexedSlots = progress.indexed
         state.indexTotal = progress.total
         if detailsPending then
-            ensureBackgroundIndexScheduled(state, BACKGROUND_INDEX_INTERVAL_MS)
+            ensureBackgroundIndexScheduled(state, backgroundIndexInterval(state))
         else
             state.backgroundIndexing = false
             state.backgroundIndexAt = nil
@@ -951,7 +1085,6 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "Inventory Manager not found")
             return
         end
-        refreshInventories(state)
         if #state.inventories == 0 then
             response(config, sender, message.id, false, nil, noInventoryError(state))
             return
@@ -1027,7 +1160,6 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "item name is required")
             return
         end
-        refreshInventories(state)
         if #state.inventories == 0 then
             response(config, sender, message.id, false, nil, noInventoryError(state))
             return
@@ -1054,17 +1186,10 @@ local function handleRequest(state, sender, message)
                     matches = type(currentStack) == "table"
                     currentDetail = currentStack
                 end
-                if matches and needsItemDetail(currentStack, config)
-                        and type(sourcePeripheral.getItemDetail) == "function" then
-                    local detailOk, detail = pcall(
-                        sourcePeripheral.getItemDetail, source.slot)
-                    if detailOk and type(detail) == "table" then
-                        currentDetail = detail
-                    else
-                        matches = false
-                    end
-                end
                 if matches then
+                    -- The variant key contains only registry id, list() NBT
+                    -- fingerprint and damage. Calling getItemDetail here added
+                    -- a second crash-prone Java read without improving safety.
                     matches = itemVariant(currentStack, currentDetail) == payload.variant
                 end
                 if matches then
@@ -1203,13 +1328,16 @@ function Server.run(config)
         itemDetailCacheError = nil, stockVariants = {},
         backgroundIndexing = false, backgroundIndexAt = nil,
         backgroundIndexTasks = nil, backgroundIndexCursor = 1,
-        nextInventoryRefreshAt = nil,
-        indexedSlots = 0, indexTotal = 0
+        itemDetailInflight = loadItemDetailInflight(config),
+        itemDetailInflightRecovered = false,
+        skippedItemDetails = 0, lastIndexWarning = nil,
+        indexedSlots = 0, indexTotal = 0,
+        peripheralRefreshAt = nil
     }
     refreshPeripherals(state)
     -- Enter the event loop before the first getItemDetail batch. This makes
     -- discovery and the basic stock list available immediately after reboot.
-    scheduleBackgroundIndex(state, BACKGROUND_INDEX_START_DELAY_MS)
+    scheduleBackgroundIndex(state, backgroundIndexStartDelay(state))
     printStatus(state)
     local stopping = false
 
@@ -1228,7 +1356,7 @@ function Server.run(config)
                     state.lastMessage = ("#%d discover"):format(sender)
                     rednet.send(sender, {
                         kind = "hello", key = config.sharedKey,
-                        name = "M2OS Create Bridge", version = 8,
+                        name = "M2OS Create Bridge", version = 9,
                         inventories = #state.inventories,
                         detectedInventories = state.discoveredInventoryCount,
                         incompatibleInventories = #state.incompatibleInventories,
@@ -1241,13 +1369,31 @@ function Server.run(config)
                 printStatus(state)
             elseif event[1] == "timer" and event[2] == timer then
                 local now = util.epoch()
+                if state.peripheralRefreshAt
+                        and now >= state.peripheralRefreshAt then
+                    state.peripheralRefreshAt = nil
+                    refreshPeripherals(state)
+                    scheduleBackgroundIndex(state,
+                        backgroundIndexStartDelay(state))
+                end
                 pollTransactions(state, now)
                 saveItemDetailCache(state, false)
                 printStatus(state)
                 timer = os.startTimer(0.25)
             elseif event[1] == "peripheral" or event[1] == "peripheral_detach" then
-                refreshPeripherals(state)
-                scheduleBackgroundIndex(state, 0)
+                -- Stop the current snapshot immediately, but delay the costly
+                -- inventory discovery until the peripheral event burst ends.
+                state.backgroundIndexing = false
+                state.backgroundIndexAt = nil
+                state.backgroundIndexTasks = nil
+                state.ticker = nil
+                state.manager = nil
+                state.managerName = nil
+                state.inventories = {}
+                state.discoveredInventoryCount = 0
+                state.peripheralRefreshAt = util.epoch()
+                    + PERIPHERAL_REFRESH_DELAY_MS
+                state.lastMessage = "Peripheral network settling..."
                 printStatus(state)
             end
         end

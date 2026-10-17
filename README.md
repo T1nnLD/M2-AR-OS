@@ -88,12 +88,20 @@ selected variant is withdrawn from its exact inventory slot instead of matching
 only its registry name.
 
 The bridge stores compact indexed metadata in `/m2os/item_detail_cache.db`.
-It starts indexing connected storage immediately after launch and continues in
-small background batches, so nobody has to keep the storage window open.
+It waits ten seconds after launch, then indexes one unique variant every two
+seconds, so nobody has to keep the storage window open and a server which has
+just restarted is not hit by a burst of peripheral calls.
 The cache survives bridge and server restarts, is shared by identical item
 variants across all inventory slots, and is revalidated after seven days by
 default. Configure or disable it with `itemDetailCacheFile` and
 `itemDetailCacheMaxAge` in `server_config.lua`.
+
+Before every `getItemDetail` call the bridge writes a tiny
+`/m2os/item_detail_inflight.db` journal. If Minecraft disappears during that
+exact call, the next run safely skips the suspect detail instead of repeating a
+server crash loop; the bridge screen reports it under `Safety:` and the item is
+still usable by registry ID. Every successful variant is committed to the cache
+before indexing continues, so a restart resumes from durable progress.
 
 For localized item and enchantment names, install **CC: Tweaked Unicode
 Support** on both the Minecraft client and server. The bridge indexes the real
@@ -161,6 +169,13 @@ Start it with:
 ```text
 m2os_server
 ```
+
+The server installer also adds `/startup/m2os_server.lua`, so an advanced
+computer starts the bridge in its own tab after a cold restart. CC:Tweaked
+computers cannot execute while their Minecraft chunk is unloaded. Force-load
+the chunks containing the bridge computer, Inventory Manager and storage (for
+example with the modpack's chunk-loading system), otherwise indexing pauses
+until a player loads them again.
 
 Useful commands from the glasses computer:
 
