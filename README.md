@@ -77,26 +77,21 @@ item icons, editable amounts and their current state. Clicking an entry removes
 it before delivery. Successfully completed transfers are removed automatically;
 failed or partial transfers remain visible for retry. Scroll up/down over an
 entry to add/subtract one; hold `Ctrl` for
-ten or `Shift` for a stack. Enchanted and plain items are listed separately.
-Enchanted cells carry a `З` badge, and hovering
-them opens a tooltip with their enchantments. Bridge protocol v8 takes one
-inventory snapshot, then indexes each unique item variant once with a pause
-between `getItemDetail` calls. Identical stacks share one compact cache entry,
-and progress checks no longer rescan a large Create vault. A temporary `?` badge
-means that the item is still being indexed. The
-selected variant is withdrawn from its exact inventory slot instead of matching
-only its registry name.
+ten or `Shift` for a stack. Item variants with different NBT are listed
+separately, and the selected variant is withdrawn from its exact inventory slot
+instead of matching only its registry name.
 
 The bridge stores compact indexed metadata in `/m2os/item_detail_cache.db`.
-It waits ten seconds after launch, then indexes one unique variant every two
-seconds, so nobody has to keep the storage window open and a server which has
-just restarted is not hit by a burst of peripheral calls.
-The cache survives bridge and server restarts, is shared by identical item
-variants across all inventory slots, and is revalidated after seven days by
-default. Configure or disable it with `itemDetailCacheFile` and
-`itemDetailCacheMaxAge` in `server_config.lua`.
+Bridge protocol v10 starts in safe mode and never calls `getItemDetail`
+automatically. It only uses the lightweight data returned by `list()` plus any
+metadata already present in the persistent cache. This avoids a Java-side
+peripheral failure taking down the dedicated server.
 
-Before every `getItemDetail` call the bridge writes a tiny
+Detailed names and enchantment tooltips can be enabled explicitly with
+`enableItemDetails = true`, but this is unsafe on modpacks where a detailed
+inventory read has already crashed the server. When enabled, the bridge waits
+ten seconds after launch and indexes one unique variant every two seconds.
+Before every such call it writes a tiny
 `/m2os/item_detail_inflight.db` journal. If Minecraft disappears during that
 exact call, the next run safely skips the suspect detail instead of repeating a
 server crash loop; the bridge screen reports it under `Safety:` and the item is
@@ -104,12 +99,10 @@ still usable by registry ID. Every successful variant is committed to the cache
 before indexing continues, so a restart resumes from durable progress.
 
 For localized item and enchantment names, install **CC: Tweaked Unicode
-Support** on both the Minecraft client and server. The bridge indexes the real
-display names of items which are currently in storage, in the same safe
-background batches used for enchantments. M2OS only ships an offline Russian
-fallback for Minecraft, Create and Advanced Peripherals; it no longer stores a
-multi-megabyte dictionary for every item in the modpack. English search remains
-available through registry names, cached English aliases and `@mod` names.
+Support** on both the Minecraft client and server. In safe mode M2OS uses cached
+display names and its offline Russian fallback for Minecraft, Create and
+Advanced Peripherals. English search remains available through registry names,
+cached English aliases and `@mod` names.
 Without the Unicode addon, names which have already degraded to `????` are
 shown using their readable registry IDs instead.
 

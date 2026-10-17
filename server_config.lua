@@ -22,8 +22,14 @@ return {
     -- are connected to the same bridge.
     deduplicateItemVaults = true,
 
-    -- One synchronous getItemDetail call is made per interval. These
-    -- conservative defaults protect a dedicated server during startup.
+    -- SAFE DEFAULT: never call getItemDetail automatically. On some modpack
+    -- combinations the Java peripheral call can crash the dedicated server,
+    -- which Lua pcall cannot catch. Existing cached names are still used.
+    -- Enable only after testing on a disposable/local server with logs.
+    enableItemDetails = false,
+
+    -- When detailed reads are explicitly enabled, make one synchronous call
+    -- per interval after the startup delay.
     backgroundIndexStartDelayMs = 10000,
     backgroundIndexIntervalMs = 2000,
 
@@ -31,6 +37,10 @@ return {
     -- Unicode Support this uses the localized name supplied by the server and
     -- avoids installing a dictionary containing the entire modpack.
     indexAllItemNames = true,
+
+    -- Do not issue a zero-count Inventory Manager transfer during startup.
+    -- Real transfers still validate the target and report their normal error.
+    probeInventoryCompatibility = false,
 
     -- Persistent compact metadata cache, shared by identical item variants.
     -- The tiny write-ahead journal prevents one malformed item detail from

@@ -2,7 +2,7 @@
 -- Usage: wget run <raw-url>/install.lua [glasses|server|all]
 
 local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/"
-local INSTALLER_VERSION = "2.3-no-autostart"
+local INSTALLER_VERSION = "2.4-safe-storage"
 local args = { ... }
 
 local cacheBuster = tostring(os.clock())

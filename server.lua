@@ -267,9 +267,17 @@ local ENCHANTABLE_NAME_SUFFIXES = {
     "_dagger", "_spear", "_staff", "_wand", "_cannon"
 }
 
+local function detailedItemReadsEnabled(config)
+    -- This must be an explicit opt-in. Some combinations of Create,
+    -- CC:Tweaked and Advanced Peripherals can fail in Java while resolving
+    -- detailed item data, which a Lua pcall cannot contain.
+    return type(config) == "table" and config.enableItemDetails == true
+end
+
 local function needsItemDetail(stack, config)
     if type(stack) ~= "table" then return false end
     config = type(config) == "table" and config or {}
+    if not detailedItemReadsEnabled(config) then return false end
     -- list() normally exposes only registry id/count/NBT. Indexing one compact
     -- detail per unique variant lets Unicode-aware servers supply the player's
     -- real localized display name without shipping an enormous dictionary.
@@ -485,7 +493,9 @@ local function invalidateChangedItemDetails(state, inventory)
     -- move cannot invalidate an existing entry. Rebuild the work snapshot to
     -- discover any genuinely new variant introduced by the transfer.
     inventory.initialSlots = nil
-    scheduleBackgroundIndex(state, backgroundIndexInterval(state))
+    if detailedItemReadsEnabled(state.config) then
+        scheduleBackgroundIndex(state, backgroundIndexInterval(state))
+    end
 end
 
 local function itemDetailCacheCount(state)
@@ -511,20 +521,24 @@ local function scanInventories(state)
                 if type(stack) == "table" and stack.name then
                     local detail = stack
                     local detailPending = false
+                    local signature = itemStackSignature(stack)
+                    local cacheKey = itemDetailCacheKey(signature)
+                    local cached = state.itemDetailCache[cacheKey]
+                    local cacheFresh = cached and cached.signature == signature
+                        and (not detailedItemReadsEnabled(state.config)
+                            or maxCacheAge <= 0 or now - cached.time
+                                < maxCacheAge * 1000)
+                    -- Safe mode still consumes previously indexed metadata,
+                    -- but never performs a new detailed peripheral call.
+                    if cacheFresh then detail = cached.detail end
                     if needsItemDetail(stack, state.config)
                             and type(inventory.peripheral.getItemDetail) == "function" then
-                        local signature = itemStackSignature(stack)
-                        local cacheKey = itemDetailCacheKey(signature)
                         local firstSignature = not seenSignatures[signature]
                         if firstSignature then
                             seenSignatures[signature] = true
                             indexTotal = indexTotal + 1
                         end
-                        local cached = state.itemDetailCache[cacheKey]
-                        if cached and cached.signature == signature
-                                and (maxCacheAge <= 0 or now - cached.time
-                                    < maxCacheAge * 1000) then
-                            detail = cached.detail
+                        if cacheFresh then
                             if firstSignature then indexedSlots = indexedSlots + 1 end
                         else
                             detailPending = true
@@ -560,11 +574,13 @@ local function scanInventories(state)
         end
     end
     local cachePruned = false
-    for key, cached in pairs(state.itemDetailCache) do
-        if maxCacheAge > 0 and now - (tonumber(cached.time) or 0)
-                >= maxCacheAge * 1000 then
-            state.itemDetailCache[key] = nil
-            cachePruned = true
+    if detailedItemReadsEnabled(state.config) then
+        for key, cached in pairs(state.itemDetailCache) do
+            if maxCacheAge > 0 and now - (tonumber(cached.time) or 0)
+                    >= maxCacheAge * 1000 then
+                state.itemDetailCache[key] = nil
+                cachePruned = true
+            end
         end
     end
     if cachePruned then markItemDetailCacheDirty(state) end
@@ -768,7 +784,8 @@ local function movedAmount(value)
     return tonumber(value) or 0
 end
 
-local function playerInventory(manager)
+local function playerInventory(state)
+    local manager = state.manager
     local okList, raw = pcall(manager.list)
     if not okList or type(raw) ~= "table" then
         return nil, tostring(raw or "cannot read player inventory")
@@ -783,7 +800,12 @@ local function playerInventory(manager)
         local slot = tonumber(key)
         if slot and type(stack) == "table" and stack.name then
             local detail = stack
-            if needsItemDetail(stack, {})
+            local signature = itemStackSignature(stack)
+            local cached = state.itemDetailCache[
+                itemDetailCacheKey(signature)]
+            if cached and cached.signature == signature then
+                detail = cached.detail
+            elseif needsItemDetail(stack, state.config)
                     and type(manager.getItemDetail) == "function" then
                 local okDetail, value = pcall(manager.getItemDetail, slot)
                 if okDetail and type(value) == "table" then detail = value end
@@ -824,8 +846,8 @@ end
 -- Inventory Manager resolves target names through the peripheral connection
 -- on which the method was called. peripheral.getNames() can also contain
 -- inventories from a second wired network attached to the same computer. A
--- zero-count import resolves the target without moving an item, so it is a
--- safe compatibility probe for Advanced Peripherals 0.8.2a.
+-- zero-count import resolves the target without moving an item, but still
+-- enters Advanced Peripherals' transfer implementation. This probe is opt-in.
 local function compatibleInventories(manager, inventories)
     if not manager then return inventories, {}, nil end
     local compatible, rejected, issue = {}, {}, nil
@@ -849,8 +871,17 @@ local function refreshInventories(state)
     discovered, state.duplicateEndpoints, state.ignoredLocalInventories
         = locateInventories(state.config)
     state.discoveredInventoryCount = #discovered
-    state.inventories, state.incompatibleInventories, state.inventoryIssue
-        = compatibleInventories(state.manager, discovered)
+    if state.config.probeInventoryCompatibility == true then
+        state.inventories, state.incompatibleInventories, state.inventoryIssue
+            = compatibleInventories(state.manager, discovered)
+    else
+        -- Avoid calling Inventory Manager.importItem during startup. Even a
+        -- zero-count probe enters the AP transfer implementation, so safe mode
+        -- defers validation until the player performs a real transfer.
+        state.inventories = discovered
+        state.incompatibleInventories = {}
+        state.inventoryIssue = nil
+    end
 end
 
 local function noInventoryError(state)
@@ -1005,6 +1036,8 @@ local function printStatus(state)
     if state.lastIndexWarning then
         print("Index:   " .. util.short(state.lastIndexWarning, 38))
     end
+    print("Details: " .. (detailedItemReadsEnabled(state.config)
+        and "UNSAFE/ENABLED" or "SAFE/OFF"))
     print("Pending: " .. tostring(#state.transactions))
     print("")
     print(state.lastMessage or "Waiting for requests...")
@@ -1036,7 +1069,7 @@ local function handleRequest(state, sender, message)
             response(config, sender, message.id, false, nil, "Inventory Manager not found")
             return
         end
-        local inventory, err = playerInventory(state.manager)
+        local inventory, err = playerInventory(state)
         if not inventory then
             response(config, sender, message.id, false, nil, err)
             return
@@ -1094,7 +1127,7 @@ local function handleRequest(state, sender, message)
         local count
         if payload.slot ~= nil then
             fromSlot = math.floor(tonumber(payload.slot) or 0)
-            local player, err = playerInventory(state.manager)
+            local player, err = playerInventory(state)
             if not player then
                 response(config, sender, message.id, false, nil, err)
                 return
@@ -1337,7 +1370,9 @@ function Server.run(config)
     refreshPeripherals(state)
     -- Enter the event loop before the first getItemDetail batch. This makes
     -- discovery and the basic stock list available immediately after reboot.
-    scheduleBackgroundIndex(state, backgroundIndexStartDelay(state))
+    if detailedItemReadsEnabled(config) then
+        scheduleBackgroundIndex(state, backgroundIndexStartDelay(state))
+    end
     printStatus(state)
     local stopping = false
 
@@ -1356,7 +1391,7 @@ function Server.run(config)
                     state.lastMessage = ("#%d discover"):format(sender)
                     rednet.send(sender, {
                         kind = "hello", key = config.sharedKey,
-                        name = "M2OS Create Bridge", version = 9,
+                        name = "M2OS Create Bridge", version = 10,
                         inventories = #state.inventories,
                         detectedInventories = state.discoveredInventoryCount,
                         incompatibleInventories = #state.incompatibleInventories,
@@ -1373,8 +1408,10 @@ function Server.run(config)
                         and now >= state.peripheralRefreshAt then
                     state.peripheralRefreshAt = nil
                     refreshPeripherals(state)
-                    scheduleBackgroundIndex(state,
-                        backgroundIndexStartDelay(state))
+                    if detailedItemReadsEnabled(config) then
+                        scheduleBackgroundIndex(state,
+                            backgroundIndexStartDelay(state))
+                    end
                 end
                 pollTransactions(state, now)
                 saveItemDetailCache(state, false)
