@@ -54,11 +54,59 @@ function util.itemLabel(item)
     return label
 end
 
+local function utf8CharacterStart(value, index)
+    index = math.max(1, math.min(tonumber(index) or #value, #value))
+    while index > 1 do
+        local byte = value:byte(index)
+        if not byte or byte < 0x80 or byte >= 0xC0 then break end
+        index = index - 1
+    end
+    return index
+end
+
+function util.utf8Length(value)
+    value = tostring(value or "")
+    local length = 0
+    for index = 1, #value do
+        local byte = value:byte(index)
+        if byte < 0x80 or byte >= 0xC0 then length = length + 1 end
+    end
+    return length
+end
+
+function util.utf8Sub(value, first, last)
+    value = tostring(value or "")
+    local length = util.utf8Length(value)
+    first = tonumber(first) or 1
+    last = tonumber(last) or length
+    if first < 0 then first = length + first + 1 end
+    if last < 0 then last = length + last + 1 end
+    first = math.max(1, first)
+    last = math.min(length, last)
+    if first > last then return "" end
+    local character, byteFirst, byteLast = 0, nil, #value
+    for index = 1, #value do
+        local byte = value:byte(index)
+        if byte < 0x80 or byte >= 0xC0 then
+            character = character + 1
+            if character == first then byteFirst = index end
+            if character == last + 1 then byteLast = index - 1 break end
+        end
+    end
+    return byteFirst and value:sub(byteFirst, byteLast) or ""
+end
+
+function util.utf8Backspace(value)
+    value = tostring(value or "")
+    if value == "" then return value end
+    return value:sub(1, utf8CharacterStart(value, #value) - 1)
+end
+
 function util.short(value, maxLength)
     value = tostring(value or "")
     maxLength = maxLength or 28
-    if #value <= maxLength then return value end
-    return value:sub(1, maxLength - 1) .. "~"
+    if util.utf8Length(value) <= maxLength then return value end
+    return util.utf8Sub(value, 1, maxLength - 1) .. "~"
 end
 
 function util.copy(value)

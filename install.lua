@@ -44,6 +44,8 @@ end
 
 local common = {
     { "lib/util.lua", "/m2os/lib/util.lua" },
+    { "lib/i18n.lua", "/m2os/lib/i18n.lua" },
+    { "lang/ru_ru.lua", "/m2os/lang/ru_ru.lua" },
     { "README.md", "/m2os/README.md" },
     { "API.md", "/m2os/API.md" }
 }

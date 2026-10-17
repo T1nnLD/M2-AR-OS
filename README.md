@@ -53,9 +53,12 @@ The Create Storage panel is a paged grid rendered with Advanced Peripherals'
 native `Item` overlay objects. Icons come directly from Minecraft, including
 modded items and active resource packs, so no texture download is needed. Move
 the mouse to select an item; the wheel changes whole pages, and the scrollbar
-can also be clicked. Click the search field or press `F` to type a registry-name
-filter. `Backspace` edits it, `Delete` clears it, and `Enter` applies it
-immediately (otherwise it applies after a short delay). Left click takes one,
+can also be clicked. Click the search field or press `F` to search in Russian,
+English, or by registry ID. Prefix a mod with `@` (`@create`, or
+`@create шестерня`) to limit results to that mod. Search is case-insensitive for
+both Cyrillic and Latin text. `Backspace` removes one complete UTF-8 character,
+`Delete` clears the query, and `Enter` applies it immediately (otherwise it
+applies after a short delay). Left click takes one,
 right click takes a stack. Select the `INVENTORY` tab at the top, or press `I`,
 to see the player's inventory. Clicking an occupied player slot deposits that
 slot's complete stack; depositing a single item is intentionally not supported.
@@ -69,8 +72,8 @@ closes the panel.
 
 The request bar at the bottom mirrors Create's Stock Keeper: queued transfers
 show native item icons, amounts and their current state. Enchanted and plain
-items are listed separately. Enchanted cells carry an `E` badge, and hovering
-them opens a tooltip with their enchantments. Bridge protocol v6 indexes item
+items are listed separately. Enchanted cells carry a `З` badge, and hovering
+them opens a tooltip with their enchantments. Bridge protocol v7 indexes item
 metadata in bounded batches, so large Create vaults cannot cause an unbounded
 burst of `getItemDetail` calls. A temporary `?` badge means that one of those
 batches is still being indexed. The selected variant is withdrawn from its
@@ -83,9 +86,12 @@ disable it with `itemDetailCacheFile` and `itemDetailCacheMaxAge` in
 `server_config.lua`.
 
 For localized item and enchantment names, install **CC: Tweaked Unicode
-Support** on both the Minecraft client and server. M2OS preserves its UTF-8
-output. Without that addon, names which have already degraded to `????` are
-shown using their readable registry IDs instead.
+Support** on both the Minecraft client and server. M2OS ships a compact Russian
+dictionary generated from Minecraft and the current modpack (over 12,000 item
+and block names), while retaining English names as search aliases. Mods without
+a Russian translation fall back to their server display name or readable
+registry path. Without the Unicode addon, names which have already degraded to
+`????` are shown using their readable registry IDs instead.
 
 ## Create storage bridge
 

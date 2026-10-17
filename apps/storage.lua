@@ -3,14 +3,14 @@ local util = require("m2os.lib.util")
 
 local app = {
     id = "storage",
-    name = "Create Storage",
+    name = "Хранилище Create",
     priority = 20,
     userToggle = false,
     required = true,
     persistent = false
 }
 
-local MIN_BRIDGE_VERSION = 6
+local MIN_BRIDGE_VERSION = 7
 local PANEL_SETTLE_MS = 180
 local DEFAULT_GRID_COLUMNS = 8
 local DEFAULT_GRID_ROWS = 4
@@ -25,6 +25,51 @@ local QUEUE_VISIBLE_ROWS = 9
 local QUEUE_HISTORY_LIMIT = 18
 local QUEUE_RESULT_LIFETIME_MS = 6000
 local DETAIL_REFRESH_DELAY_MS = 400
+
+local STATUS_RU = {
+    OFFLINE = "НЕ В СЕТИ",
+    ONLINE = "В СЕТИ",
+    SEARCHING = "ПОИСК",
+    SEARCH = "ПОИСК",
+    SYNC = "СИНХР.",
+    INDEXING = "ИНДЕКС",
+    ERROR = "ОШИБКА",
+    ["NO WIRELESS MODEM"] = "НЕТ МОДЕМА",
+    ["UPDATE BRIDGE"] = "ОБНОВИ МОСТ",
+    CRAFTING = "КРАФТ",
+    DELIVERY = "ВЫДАЧА",
+    DEPOSIT = "ПРИЁМ"
+}
+
+local ERROR_RU = {
+    { "storage bridge update required", "нужно обновить мост хранилища" },
+    { "storage bridge not discovered", "мост хранилища не найден" },
+    { "Inventory Manager not found", "Inventory Manager не найден" },
+    { "player inventory slot is empty", "выбранный слот инвентаря пуст" },
+    { "player inventory changed", "инвентарь игрока изменился — повтори попытку" },
+    { "hand is empty", "рука пуста или не указано имя предмета" },
+    { "no storage accepted", "ни одно хранилище не приняло предмет" },
+    { "item name is required", "не указано имя предмета" },
+    { "item variant is stale", "данные предмета устарели — обнови склад" },
+    { "item not found or player inventory is full",
+        "предмет не найден или инвентарь игрока заполнен" },
+    { "Create crafting is disabled", "крафт Create отключён" },
+    { "Create Stock Ticker not found", "Stock Ticker Create не найден" },
+    { "different wired networks", "хранилище и Manager находятся в разных проводных сетях" },
+    { "no bound player", "Memory Card не привязана к игроку" },
+    { "item transfer is disabled", "перенос предметов отключён на сервере" },
+    { "no named wired inventories", "проводные хранилища с именами не найдены" },
+    { "only side inventories found", "найдены только боковые подключения — нужен проводной модем" },
+    { "request timeout", "сервер не ответил вовремя" }
+}
+
+local function localizedError(value)
+    local message = tostring(value or "неизвестная ошибка")
+    for _, replacement in ipairs(ERROR_RU) do
+        if message:find(replacement[1], 1, true) then return replacement[2] end
+    end
+    return message
+end
 
 local state = {
     modemName = nil,
@@ -101,8 +146,8 @@ local function send(ctx, operation, payload, callback)
     -- multiplayer server. Discovery is harmless; all other operations require
     -- the bridge to explicitly advertise the safe protocol version first.
     if not bridgeReady() then
-        local reason = state.serverId and "storage bridge update required"
-            or "storage bridge not discovered"
+        local reason = state.serverId and "нужно обновить мост хранилища"
+            or "мост хранилища не найден"
         if callback then callback(false, nil, reason) end
         return nil
     end
@@ -129,7 +174,7 @@ local function discover(ctx)
         key = ctx.config.storage.sharedKey
     }, ctx.config.storage.protocol)
     state.status = "SEARCHING"
-    state.statusDetail = "Looking for a compatible storage bridge..."
+    state.statusDetail = "Ищу совместимый мост хранилища..."
     return true
 end
 
@@ -219,7 +264,7 @@ local function queueOperation(operation, item, count, payload, callback)
         id = state.transferSequence,
         operation = operation,
         name = item and item.name or nil,
-        label = item and readableItemLabel(item) or "held stack",
+        label = item and readableItemLabel(item) or "стак в руке",
         enchantments = item and item.enchantments or nil,
         enchanted = item and item.enchanted == true or false,
         requested = math.max(1, tonumber(count) or 1),
@@ -250,7 +295,7 @@ local function finishQueueOperation(entry, ok, data, err)
     entry.finished = util.epoch()
     entry.expires = entry.finished + QUEUE_RESULT_LIFETIME_MS
     entry.moved = tonumber(data and data.moved) or 0
-    entry.error = err and tostring(err) or nil
+    entry.error = err and localizedError(err) or nil
     local requested = tonumber(data and data.requested) or entry.requested
     local remaining = tonumber(data and data.remaining) or 0
     entry.requested = requested
@@ -264,22 +309,22 @@ local function finishQueueOperation(entry, ok, data, err)
 end
 
 local function queueDetail(entry)
-    local action = entry.operation == "withdraw" and "GET"
-        or entry.operation == "deposit" and "PUT"
-        or entry.operation == "craft" and "MAKE" or "DO"
+    local action = entry.operation == "withdraw" and "ВЗЯТЬ"
+        or entry.operation == "deposit" and "СДАТЬ"
+        or entry.operation == "craft" and "КРАФТ" or "ДЕЙСТВ."
     if entry.status == "queued" then
-        return ("%s x%d  NEXT"):format(action, entry.requested)
+        return ("%s x%d  ОЧЕРЕДЬ"):format(action, entry.requested)
     end
     if entry.status == "pending" then
-        return ("%s x%d  WAIT"):format(action, entry.requested)
+        return ("%s x%d  ЖДУ"):format(action, entry.requested)
     end
     if entry.status == "partial" then
-        return ("%s %d/%d PART"):format(action, entry.moved or 0, entry.requested)
+        return ("%s %d/%d ЧАСТЬ"):format(action, entry.moved or 0, entry.requested)
     end
     if entry.status == "failed" then
-        return ("%s x%d  FAIL"):format(action, entry.requested)
+        return ("%s x%d  СБОЙ"):format(action, entry.requested)
     end
-    return ("%s x%d  DONE"):format(action, entry.moved or entry.requested)
+    return ("%s x%d  ГОТОВО"):format(action, entry.moved or entry.requested)
 end
 
 local function visibleQueueEntries()
@@ -359,7 +404,8 @@ local function updatePanel(ctx)
         statusColor = theme.amber
     end
     if state.status == "ERROR" then statusColor = theme.red end
-    setCached(widgets, "statusText", widgets.status, "setContent", state.status)
+    setCached(widgets, "statusText", widgets.status, "setContent",
+        STATUS_RU[state.status] or state.status)
     setCached(widgets, "statusColor", widgets.status, "setColor", statusColor)
 
     local storageView = state.view == "storage"
@@ -367,8 +413,8 @@ local function updatePanel(ctx)
     local hasRows = storageView and #state.rows > 0
         or (not storageView and next(state.playerSlots) ~= nil)
     local emptyText = state.statusDetail
-        or (bridgeReady() and (storageView and "Storage is empty"
-            or "Player inventory is empty") or "No bridge connection")
+        or (bridgeReady() and (storageView and "Хранилище пусто"
+            or "Инвентарь игрока пуст") or "Нет соединения с мостом")
     setCached(widgets, "emptyText", widgets.empty, "setContent",
         hasRows and "" or util.short(emptyText, 46))
     setCached(widgets, "emptyColor", widgets.empty, "setColor",
@@ -380,12 +426,12 @@ local function updatePanel(ctx)
     local currentPage = math.floor((state.offset - 1) / widgets.pageSize) + 1
     local searchText
     if state.query ~= "" then
-        searchText = (state.searchActive and "> " or "SEARCH: ") .. state.query
+        searchText = (state.searchActive and "> " or "ПОИСК: ") .. state.query
     else
-        searchText = state.searchActive and "> " or "SEARCH... [F]"
+        searchText = state.searchActive and "> " or "ПОИСК... [F]  @МОД"
     end
     setCached(widgets, "searchTextValue", widgets.searchText, "setContent",
-        storageView and searchText or "CLICK A STACK TO DEPOSIT IT")
+        storageView and searchText or "НАЖМИ НА СТАК, ЧТОБЫ ПОЛОЖИТЬ ЕГО")
     setCached(widgets, "searchTextColor", widgets.searchText, "setColor",
         storageView and state.searchActive and theme.white or theme.gray)
     setCached(widgets, "searchBackgroundColor", widgets.searchBackground, "setColor",
@@ -415,8 +461,8 @@ local function updatePanel(ctx)
         objectCall(widgets.tabMarker, "setPos", tabMarkerX, widgets.panelY + 19, 77)
     end
     setCached(widgets, "footerText", widgets.footer, "setContent",
-        storageView and "L:take  R:stack  I:inventory"
-            or "CLICK: DEPOSIT FULL STACK  I:storage")
+        storageView and "ЛКМ:1  ПКМ:стак  I:инвентарь"
+            or "КЛИК: положить стак  I:склад")
 
     if widgets.queueRows then
         local hidden = math.max(0, #state.transferQueue - #visibleQueue)
@@ -427,7 +473,7 @@ local function updatePanel(ctx)
             end
         end
         setCached(widgets, "queueTitleText", widgets.queueTitle, "setContent",
-            ("REQUEST QUEUE  %d%s"):format(waiting,
+            ("ОЧЕРЕДЬ ЗАПРОСОВ  %d%s"):format(waiting,
                 hidden > 0 and ("  +" .. hidden) or ""))
         for index, row in ipairs(widgets.queueRows) do
             local queued = visibleQueue[index]
@@ -445,7 +491,7 @@ local function updatePanel(ctx)
                 setCached(row, "countText", row.count, "setContent",
                     compactCount(shownCount))
                 setCached(row, "stateText", row.state, "setContent",
-                    queued.status == "pending" and "W"
+                    queued.status == "pending" and "Ж"
                         or queued.status == "queued" and ">"
                         or queued.status == "done" and "+"
                         or queued.status == "partial" and "~" or "!")
@@ -470,7 +516,7 @@ local function updatePanel(ctx)
     elseif state.transferQueue[1] then
         local queued = visibleQueue[1]
         setCached(widgets, "selectedText", widgets.selectedLabel, "setContent",
-            util.short("QUEUE: " .. queueDetail(queued) .. " " .. queued.label, 50))
+            util.short("ОЧЕРЕДЬ: " .. queueDetail(queued) .. " " .. queued.label, 50))
     end
 
     local trackHeight = widgets.gridRows * widgets.slotSize - 2
@@ -530,7 +576,7 @@ local function updatePanel(ctx)
             setCached(entry, "countText", entry.count, "setContent",
                 compactCount(item.count))
             setCached(entry, "enchantText", entry.enchantBadge, "setContent",
-                item.detailPending and "?" or item.enchanted and "E" or "")
+                item.detailPending and "?" or item.enchanted and "З" or "")
             setCached(entry, "enchantColor", entry.enchantBadge, "setColor",
                 item.detailPending and theme.amber or theme.purple)
         else
@@ -566,7 +612,7 @@ local function updatePanel(ctx)
             local content = tooltipEnchantments[index]
             if index == #widgets.tooltipLines
                     and #tooltipEnchantments > #widgets.tooltipLines then
-                content = "+" .. tostring(#tooltipEnchantments - index + 1) .. " more"
+                content = "+" .. tostring(#tooltipEnchantments - index + 1) .. " ещё"
             end
             setCached(line, "content", line.object, "setContent",
                 content and util.short(content, 32) or "")
@@ -630,8 +676,8 @@ local function drawPanel(ctx)
     ctx.ui.rectangle(x, y, panelW, panelH, theme.background, 1, 70)
     ctx.ui.rectangle(x, y, panelW, 2, theme.purple, 1, 72)
     ctx.ui.rectangle(x, y + panelH - 2, panelW, 2, STORAGE_MUTED, 1, 72)
-    widgets.storageTab = ctx.ui.text(x + 9, y + 7, "STORAGE", theme.white, 0.78, 75)
-    widgets.inventoryTab = ctx.ui.text(x + 74, y + 7, "INVENTORY", theme.gray, 0.78, 75)
+    widgets.storageTab = ctx.ui.text(x + 9, y + 7, "СКЛАД", theme.white, 0.78, 75)
+    widgets.inventoryTab = ctx.ui.text(x + 74, y + 7, "ИНВЕНТАРЬ", theme.gray, 0.78, 75)
     widgets.tabMarker = ctx.ui.rectangle(
         widgets.storageTabCenter - 27, y + 18, 54, 2, theme.purple, 1, 77)
     widgets.status = ctx.ui.text(x + panelW - 70, y + 8, state.status,
@@ -639,7 +685,7 @@ local function drawPanel(ctx)
     widgets.searchBackground = ctx.ui.rectangle(
         gridX, y + 22, gridW, 15, STORAGE_MUTED, 0.52, 73)
     widgets.searchText = ctx.ui.text(
-        gridX + 5, y + 25, "SEARCH... [F]", theme.gray, 0.66, 76)
+        gridX + 5, y + 25, "ПОИСК... [F]  @МОД", theme.gray, 0.66, 76)
     widgets.page = ctx.ui.text(x + panelW - 37, y + 26, "1/1", theme.gray, 0.65, 76)
     widgets.empty = ctx.ui.text(x + 10, y + 47, "", theme.gray, 0.78, 83)
     widgets.cellCount = math.max(widgets.pageSize,
@@ -681,7 +727,7 @@ local function drawPanel(ctx)
         widgets.queueSlotSize = queueSlotSize
         widgets.queueWidth = queueWidth
         widgets.queueTitle = ctx.ui.text(queueX, queueY - 10,
-            "REQUEST QUEUE  0", theme.gray, 0.53, 80)
+            "ОЧЕРЕДЬ ЗАПРОСОВ  0", theme.gray, 0.53, 80)
         for index = 1, QUEUE_VISIBLE_ROWS do
             local slotX = queueX + (index - 1) * queueSlotSize
             local okItem, itemObject = pcall(ctx.ui.raw, "Item", {
@@ -704,7 +750,7 @@ local function drawPanel(ctx)
     widgets.selectedLabel = ctx.ui.text(x + 9, y + panelH - 31,
         "", theme.white, 0.72, 84)
     widgets.footer = ctx.ui.text(x + 9, y + panelH - 16,
-        "L:take  R:stack  I:inventory", theme.gray, 0.60, 75)
+        "ЛКМ:1  ПКМ:стак  I:инвентарь", theme.gray, 0.60, 75)
     widgets.tooltipBackground = ctx.ui.rectangle(
         x, y, 150, 61, 0x090816, 0, 90)
     widgets.tooltipTitle = ctx.ui.text(x, y, "", theme.white, 0.64, 92, true)
@@ -751,8 +797,8 @@ local function refreshPlayerInventory(ctx)
             end
         elseif state.view == "inventory" then
             state.status = "ERROR"
-            state.statusDetail = tostring(err)
-            ctx.notify("Inventory: " .. tostring(err), ctx.config.theme.red)
+            state.statusDetail = localizedError(err)
+            ctx.notify("Инвентарь: " .. localizedError(err), ctx.config.theme.red)
         end
         refreshPanel(ctx)
     end)
@@ -769,12 +815,12 @@ local function refresh(ctx, query)
     end
     if not bridgeReady() then
         state.status = "UPDATE BRIDGE"
-        state.statusDetail = "Old bridge found; update and restart it"
+        state.statusDetail = "Найден старый мост — обнови и перезапусти его"
         refreshPanel(ctx)
         return
     end
     state.status = "SYNC"
-    state.statusDetail = "Reading connected inventories..."
+    state.statusDetail = "Читаю подключённые хранилища..."
     refreshPanel(ctx)
     if state.view == "inventory" then refreshPlayerInventory(ctx) end
     state.stockGeneration = state.stockGeneration + 1
@@ -800,8 +846,8 @@ local function refresh(ctx, query)
             end
         else
             state.status = "ERROR"
-            state.statusDetail = tostring(err)
-            ctx.notify("Storage: " .. tostring(err), ctx.config.theme.red)
+            state.statusDetail = localizedError(err)
+            ctx.notify("Хранилище: " .. localizedError(err), ctx.config.theme.red)
         end
         refreshPanel(ctx)
     end)
@@ -827,8 +873,8 @@ processTransferQueue = function(ctx)
             local callbackOk, callbackError = pcall(queued.callback, ok, data, err)
             if not callbackOk then
                 queued.status = "failed"
-                queued.error = tostring(callbackError)
-                ctx.notify("Queue callback: " .. tostring(callbackError),
+                queued.error = localizedError(callbackError)
+                ctx.notify("Ошибка очереди: " .. localizedError(callbackError),
                     ctx.config.theme.red)
             end
         end
@@ -917,7 +963,7 @@ function app.start(ctx)
         toggle = function() togglePanel(ctx) end
     })
     ctx.menu.add({
-        id = "storage.panel", label = "CREATE STORAGE", order = 30,
+        id = "storage.panel", label = "СКЛАД CREATE", order = 30,
         keepInput = true,
         checked = function() return state.panelOpen end,
         run = function() togglePanel(ctx) end
@@ -933,7 +979,7 @@ local function transfer(ctx, operation, count)
     local item = selectedItem()
     if not item then return end
     if item.detailPending then
-        ctx.notify("Item data is still indexing; try again in a moment",
+        ctx.notify("Предмет ещё индексируется — попробуй через секунду",
             ctx.config.theme.amber)
         return
     end
@@ -946,16 +992,17 @@ local function transfer(ctx, operation, count)
             local moved = tonumber(data and data.moved) or 0
             local remaining = tonumber(data and data.remaining) or 0
             if remaining > 0 then
-                ctx.notify(("Inventory full: moved %d/%d"):format(
+                ctx.notify(("Инвентарь заполнен: получено %d/%d"):format(
                     moved, tonumber(data and data.requested) or requested),
                     ctx.config.theme.amber)
             else
-                ctx.notify(("Received %d item(s)"):format(moved),
+                ctx.notify(("Получено предметов: %d"):format(moved),
                     ctx.config.theme.green)
             end
         else
             state.status = "ERROR"
-            ctx.notify("Inventory full or transfer failed: " .. tostring(err),
+            ctx.notify("Инвентарь заполнен или передача не удалась: "
+                    .. localizedError(err),
                 ctx.config.theme.red)
         end
     end)
@@ -995,15 +1042,15 @@ local function depositPlayerSlot(ctx, slot)
             local requested = tonumber(data and data.requested) or expectedCount
             local remaining = tonumber(data and data.remaining) or 0
             if remaining > 0 then
-                ctx.notify(("Storage full: moved %d/%d"):format(moved, requested),
+                ctx.notify(("Склад заполнен: принято %d/%d"):format(moved, requested),
                     ctx.config.theme.amber)
             else
-                ctx.notify(("Deposited full stack: %d"):format(moved),
+                ctx.notify(("На склад отправлен стак: %d"):format(moved),
                     ctx.config.theme.green)
             end
         else
             state.status = "ERROR"
-            ctx.notify("Storage full or item rejected: " .. tostring(err),
+            ctx.notify("Склад заполнен или не принял предмет: " .. localizedError(err),
                 ctx.config.theme.red)
         end
     end)
@@ -1021,8 +1068,8 @@ end
 local function depositHand(ctx)
     queueOperation("deposit", nil, 64, { hand = true, count = 64 },
         function(ok, data, err)
-        ctx.notify(ok and ("Deposited " .. tostring(data and data.moved or 0))
-            or ("Deposit: " .. tostring(err)),
+        ctx.notify(ok and ("На склад отправлено: " .. tostring(data and data.moved or 0))
+            or ("Ошибка приёма: " .. localizedError(err)),
             ok and ctx.config.theme.green or ctx.config.theme.red)
     end)
     refreshPanel(ctx)
@@ -1128,10 +1175,18 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 state.ignoreNextChar = false
             else
                 local character = tostring(sender or "")
-                if #state.query < 48 and #character > 0 then
+                if util.utf8Length(state.query) < 48 and #character > 0 then
                     state.query = state.query .. character
                     scheduleSearch(ctx)
                 end
+            end
+            return true
+        elseif event == "paste" and state.searchActive then
+            local remaining = math.max(0, 48 - util.utf8Length(state.query))
+            local pasted = util.utf8Sub(tostring(sender or ""), 1, remaining)
+            if pasted ~= "" then
+                state.query = state.query .. pasted
+                scheduleSearch(ctx)
             end
             return true
         elseif event == "player_mouse_move" then
@@ -1215,7 +1270,7 @@ function app.onEvent(ctx, event, sender, message, protocol)
             if state.view ~= "storage" then return true end
             if state.searchActive then
                 if code == keys.backspace then
-                    state.query = state.query:sub(1, math.max(0, #state.query - 1))
+                    state.query = util.utf8Backspace(state.query)
                     scheduleSearch(ctx)
                 elseif code == keys.delete then
                     state.query = ""
@@ -1272,8 +1327,8 @@ function app.onEvent(ctx, event, sender, message, protocol)
             state.serverId = nil
             state.serverVersion = nil
             state.status = "UPDATE BRIDGE"
-            state.statusDetail = "Old bridge #" .. tostring(sender)
-                .. " found; update and restart it"
+            state.statusDetail = "Старый мост #" .. tostring(sender)
+                .. " — обнови и перезапусти его"
             if state.panelOpen then refreshPanel(ctx) end
         end
         return
@@ -1309,7 +1364,7 @@ function app.update(ctx, now)
             or pending.operation == "stock" and 15000 or 8000
         if now - pending.started > timeout then
             state.pending[id] = nil
-            if pending.callback then pending.callback(false, nil, "request timeout") end
+            if pending.callback then pending.callback(false, nil, "сервер не ответил вовремя") end
         end
     end
 end

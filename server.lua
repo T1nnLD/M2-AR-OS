@@ -1,4 +1,5 @@
 local util = require("m2os.lib.util")
+local i18n = require("m2os.lib.i18n")
 
 local Server = {}
 
@@ -26,7 +27,6 @@ end
 
 local function normalizeStock(raw, query, limit)
     local items = {}
-    query = tostring(query or ""):lower()
     for key, value in pairs(type(raw) == "table" and raw or {}) do
         local item
         if type(value) == "table" then
@@ -45,17 +45,8 @@ local function normalizeStock(raw, query, limit)
             item = { name = key, count = tonumber(value) or 0 }
         end
         if item and item.name then
-            local enchantmentSearch = {}
-            for _, enchantment in ipairs(type(item.enchantments) == "table"
-                    and item.enchantments or {}) do
-                enchantmentSearch[#enchantmentSearch + 1] = table.concat({
-                    tostring(enchantment.name or ""),
-                    tostring(enchantment.displayName or "")
-                }, " ")
-            end
-            local haystack = (item.name .. " " .. (item.displayName or "")
-                .. " " .. table.concat(enchantmentSearch, " ")):lower()
-            if query == "" or haystack:find(query, 1, true) then items[#items + 1] = item end
+            item = i18n.localizeItem(item)
+            if i18n.matchesItem(item, query) then items[#items + 1] = item end
         end
     end
     table.sort(items, function(a, b)
@@ -497,7 +488,7 @@ local function playerInventory(manager)
                 if okDetail and type(value) == "table" then detail = value end
             end
             local enchantments = normalizeEnchantments(detail)
-            slots[#slots + 1] = {
+            slots[#slots + 1] = i18n.localizeItem({
                 slot = slot,
                 name = stack.name,
                 displayName = detail.displayName
@@ -505,7 +496,7 @@ local function playerInventory(manager)
                 count = tonumber(stack.count) or 0,
                 enchantments = enchantments,
                 enchanted = #enchantments > 0
-            }
+            })
             capacity = math.max(capacity, slot)
         end
     end
@@ -1015,7 +1006,7 @@ function Server.run(config)
                 state.lastMessage = ("#%d discover"):format(sender)
                 rednet.send(sender, {
                     kind = "hello", key = config.sharedKey,
-                    name = "M2OS Create Bridge", version = 6,
+                    name = "M2OS Create Bridge", version = 7,
                     inventories = #state.inventories,
                     detectedInventories = state.discoveredInventoryCount,
                     incompatibleInventories = #state.incompatibleInventories,
