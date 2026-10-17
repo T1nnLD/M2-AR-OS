@@ -907,6 +907,7 @@ processTransferQueue = function(ctx)
         - (tonumber(queued.moved) or 0)
     if difference == 0 then
         queued.status = "done"
+        removeQueueEntry(queued)
         return processTransferQueue(ctx)
     end
 
@@ -922,6 +923,7 @@ processTransferQueue = function(ctx)
             -- Crafting cannot be reversed. Keep the honest delivered amount.
             queued.requested = queued.moved
             queued.status = "done"
+            removeQueueEntry(queued)
             return processTransferQueue(ctx)
         end
     end
@@ -963,6 +965,7 @@ processTransferQueue = function(ctx)
         if requeue and queued.requested ~= queued.moved then
             queued.status = "queued"
         end
+        if queued.status == "done" then removeQueueEntry(queued) end
         state.transferBusy = false
         refreshPanel(ctx)
         if not processTransferQueue(ctx) then refresh(ctx) end

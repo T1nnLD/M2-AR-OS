@@ -72,12 +72,12 @@ item when optional Create crafting is enabled; the same `Ctrl`/`Shift` amount
 modifiers apply to `C` and `Enter`. Closing the Keyboard module
 closes the panel.
 
-The request bar at the bottom mirrors Create's Stock Keeper: transfers remain
-there until clicked, and show native item icons, editable amounts and their
-current state. Scroll up/down over an entry to add/subtract one; hold `Ctrl` for
-ten or `Shift` for a stack. Increasing a completed withdrawal requests the
-difference, while decreasing it returns the difference to storage. Enchanted
-and plain items are listed separately. Enchanted cells carry a `З` badge, and hovering
+The request bar at the bottom mirrors Create's Stock Keeper and shows native
+item icons, editable amounts and their current state. Successfully completed
+transfers are removed automatically; failed or partial transfers remain visible
+until clicked. Scroll up/down over an entry to add/subtract one; hold `Ctrl` for
+ten or `Shift` for a stack. Enchanted and plain items are listed separately.
+Enchanted cells carry a `З` badge, and hovering
 them opens a tooltip with their enchantments. Bridge protocol v8 takes one
 inventory snapshot, then indexes each unique item variant once with a pause
 between `getItemDetail` calls. Identical stacks share one compact cache entry,
