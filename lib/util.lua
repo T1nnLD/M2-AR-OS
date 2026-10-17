@@ -33,7 +33,10 @@ end
 -- same geometry, colours and renderer.
 local CURSOR_TEXT_LAYERS = {
     { key = "glow", glyph = "●", size = 1.75, y = -7.875 },
-    { key = "ring", glyph = "○", size = 1.18, y = -5.31 },
+    -- Unicode Support renders the hollow-circle glyph almost square. This
+    -- bullseye uses the round glyph which was already verified in-game; the
+    -- purple dot below covers its white centre.
+    { key = "ring", glyph = "◉", size = 1.15, y = -5.175 },
     { key = "dot", glyph = "●", size = 0.43, y = -1.935 }
 }
 
