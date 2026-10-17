@@ -767,18 +767,20 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
-    -- Exactly the same three-layer cursor used by the radial menu.
+    -- Keep the radial menu's round three-layer shape, but make the storage
+    -- fill opaque. Its 0.18-alpha glow looks good over the world; over solid
+    -- inventory cells it mostly reproduces the cell colour and seems absent.
     widgets.cursorGlow = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 97, radius = 8,
-        filled = true, color = theme.purple, opacity = 0.18
+        gui = true, x = gridX, y = gridY, z = 97, radius = 4.75,
+        filled = true, color = theme.purple, opacity = 1
     })
     widgets.cursorRing = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 98, radius = 5,
-        filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
+        gui = true, x = gridX, y = gridY, z = 98, radius = 6,
+        filled = false, borderWidth = 2, color = theme.white, opacity = 1
     })
     widgets.cursorDot = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 99, radius = 1.8,
-        filled = true, color = theme.purple, opacity = 1
+        gui = true, x = gridX, y = gridY, z = 99, radius = 1.7,
+        filled = true, color = theme.white, opacity = 1
     })
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
