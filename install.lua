@@ -88,6 +88,22 @@ local function ensureParent(path)
     if parent ~= "" and not fs.exists(parent) then fs.makeDir(parent) end
 end
 
+-- Recover an interrupted older update and remove its orphaned copies before
+-- downloading anything. This is important on the default 1 MB CC disk.
+for _, entry in ipairs(files) do
+    local target = entry[2]
+    local temp, backup = target .. ".m2tmp", target .. ".bak"
+    if fs.exists(temp) then fs.delete(temp) end
+    if fs.exists(backup) then
+        if fs.exists(target) then
+            fs.delete(backup)
+        else
+            ensureParent(target)
+            fs.move(backup, target)
+        end
+    end
+end
+
 local function download(remotePath)
     local url = REPOSITORY .. remotePath
     local response, reason = http.get(url, {
@@ -104,7 +120,6 @@ local function download(remotePath)
     return data
 end
 
-local staged = {}
 writeLine(("Installing M2OS (%s)..."):format(mode), COLORS.lightBlue)
 
 for index, entry in ipairs(files) do
@@ -118,33 +133,63 @@ for index, entry in ipairs(files) do
             color(COLORS.red)
             print("FAILED")
             color(COLORS.white)
-            for _, item in ipairs(staged) do
-                if fs.exists(item.temp) then fs.delete(item.temp) end
-            end
             error(("Cannot download %s: %s"):format(remotePath, tostring(reason)), 0)
         end
         local temp = target .. ".m2tmp"
         ensureParent(temp)
         if fs.exists(temp) then fs.delete(temp) end
+        local keepBackup = fs.exists(target)
+        local free = fs.getFreeSpace and fs.getFreeSpace("/") or "unlimited"
+        if keepBackup and type(free) == "number" and free < #data then
+            -- The downloaded response is already safely in memory. On a full
+            -- disk, remove the old copy now so the smaller replacement can be
+            -- written without needing room for both versions at once.
+            if free + fs.getSize(target) < #data then
+                error(("Not enough disk space for %s (need %d bytes)"):format(
+                    target, #data), 0)
+            end
+            fs.delete(target)
+            keepBackup = false
+        end
         local handle = fs.open(temp, "wb")
         if not handle then error("Cannot write " .. temp, 0) end
-        handle.write(data)
+        local wrote, writeError = pcall(handle.write, data)
         handle.close()
-        staged[#staged + 1] = { temp = temp, target = target }
+        if not wrote then
+            if fs.exists(temp) then fs.delete(temp) end
+            color(COLORS.red)
+            print("FAILED")
+            color(COLORS.white)
+            error(("Cannot write %s: %s"):format(temp,
+                tostring(writeError or "out of space")), 0)
+        end
+
+        -- Replace one file at a time and delete its backup immediately. The
+        -- previous installer staged the entire project and kept every .bak,
+        -- temporarily using two or three times the required disk space.
+        local backup = target .. ".bak"
+        ensureParent(target)
+        if fs.exists(backup) then fs.delete(backup) end
+        if keepBackup and fs.exists(target) then fs.move(target, backup) end
+        local ok, reason = pcall(fs.move, temp, target)
+        if not ok then
+            if fs.exists(backup) and not fs.exists(target) then
+                fs.move(backup, target)
+            end
+            if fs.exists(temp) then fs.delete(temp) end
+            error("Cannot install " .. target .. ": " .. tostring(reason), 0)
+        end
+        if fs.exists(backup) then fs.delete(backup) end
         writeLine("OK", COLORS.lime)
     end
 end
 
-for _, item in ipairs(staged) do
-    local backup = item.target .. ".bak"
-    ensureParent(item.target)
+-- A successful update must never leave installer-owned copies behind.
+for _, entry in ipairs(files) do
+    local target = entry[2]
+    local temp, backup = target .. ".m2tmp", target .. ".bak"
+    if fs.exists(temp) then fs.delete(temp) end
     if fs.exists(backup) then fs.delete(backup) end
-    if fs.exists(item.target) then fs.move(item.target, backup) end
-    local ok, reason = pcall(fs.move, item.temp, item.target)
-    if not ok then
-        if fs.exists(backup) and not fs.exists(item.target) then fs.move(backup, item.target) end
-        error("Cannot install " .. item.target .. ": " .. tostring(reason), 0)
-    end
 end
 
 writeLine("", COLORS.white)

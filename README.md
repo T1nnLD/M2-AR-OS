@@ -88,12 +88,14 @@ disable it with `itemDetailCacheFile` and `itemDetailCacheMaxAge` in
 `server_config.lua`.
 
 For localized item and enchantment names, install **CC: Tweaked Unicode
-Support** on both the Minecraft client and server. M2OS ships a compact Russian
-dictionary generated from Minecraft and the current modpack (over 12,000 item
-and block names), while retaining English names as search aliases. Mods without
-a Russian translation fall back to their server display name or readable
-registry path. Without the Unicode addon, names which have already degraded to
-`????` are shown using their readable registry IDs instead.
+Support** on both the Minecraft client and server. The bridge indexes the real
+display names of items which are currently in storage, in the same safe
+background batches used for enchantments. M2OS only ships an offline Russian
+fallback for Minecraft, Create and Advanced Peripherals; it no longer stores a
+multi-megabyte dictionary for every item in the modpack. English search remains
+available through registry names, cached English aliases and `@mod` names.
+Without the Unicode addon, names which have already degraded to `????` are
+shown using their readable registry IDs instead.
 
 ## Create storage bridge
 

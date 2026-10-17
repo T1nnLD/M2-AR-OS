@@ -7,7 +7,10 @@ local Server = {}
 -- dozens of one-count items in a large Create vault can trip the dedicated
 -- server watchdog, so detailed metadata is indexed in small bounded batches.
 local ITEM_DETAIL_CALLS_PER_SCAN = 4
-local ITEM_DETAIL_CACHE_VERSION = 1
+-- v2 also indexes display names for ordinary (non-enchanted) items. Discard
+-- older entries so names captured before Unicode Support was installed do not
+-- remain as question marks for the cache lifetime.
+local ITEM_DETAIL_CACHE_VERSION = 2
 local ITEM_DETAIL_CACHE_FILE = "/m2os/item_detail_cache.db"
 local ITEM_DETAIL_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 local ITEM_DETAIL_CACHE_SAVE_DELAY_MS = 1000
@@ -240,6 +243,12 @@ local ENCHANTABLE_NAME_SUFFIXES = {
 
 local function needsItemDetail(stack, config)
     if type(stack) ~= "table" then return false end
+    config = type(config) == "table" and config or {}
+    -- list() normally exposes only registry id/count/NBT. Indexing the compact
+    -- detail for every occupied slot lets Unicode-aware servers supply the
+    -- player's real localized display name without shipping an enormous
+    -- dictionary for the whole modpack.
+    if config.indexAllItemNames ~= false then return true end
     if stack.nbt ~= nil then return true end
     local name = tostring(stack.name or ""):lower()
     local path = name:match("^[^:]+:(.+)$") or name
@@ -248,7 +257,6 @@ local function needsItemDetail(stack, config)
     end
     -- Modpacks can add enchantable items with unusual registry names. Extra
     -- plain-text hints may be supplied without making every vault slot costly.
-    config = type(config) == "table" and config or {}
     for _, hint in ipairs(config.detailedItemPatterns or {}) do
         if name:find(tostring(hint):lower(), 1, true) then return true end
     end

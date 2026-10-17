@@ -27,6 +27,11 @@ return {
     -- Keep this at 4 (8 is the hard safety limit).
     itemDetailCallsPerScan = 4,
 
+    -- Cache display names for every occupied storage slot. With CC: Tweaked
+    -- Unicode Support this uses the localized name supplied by the server and
+    -- avoids installing a dictionary containing the entire modpack.
+    indexAllItemNames = true,
+
     -- Persistent compact metadata cache. It survives bridge restarts and is
     -- invalidated when a slot's item/count/NBT signature changes. Entries are
     -- periodically rechecked as protection against mods which hide NBT from
