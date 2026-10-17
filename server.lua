@@ -280,9 +280,12 @@ end
 
 local function itemStackSignature(stack)
     if type(stack) ~= "table" or not stack.name then return nil end
+    -- Count changes do not affect display name, enchantments or any other
+    -- metadata kept in this cache. Including count here forced a needless
+    -- getItemDetail reindex after every deposit/withdrawal and made opening
+    -- the storage appear to rebuild the whole index repeatedly.
     return table.concat({
-        tostring(stack.name), tostring(stack.count or 0),
-        tostring(stack.nbt or "")
+        tostring(stack.name), tostring(stack.nbt or "")
     }, "|")
 end
 

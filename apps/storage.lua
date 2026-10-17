@@ -27,6 +27,43 @@ local QUEUE_RESULT_LIFETIME_MS = 6000
 local DETAIL_REFRESH_DELAY_MS = 400
 local CURSOR_TEXTURE_SIZE = 15
 
+-- A tiny PNG is more reliable than changing Texture pixels after Item overlay
+-- objects have been populated. AP 0.8.2a occasionally loses dynamically set
+-- cursor pixels when an Item object's texture is refreshed, while load() uses
+-- an independent native image just like the desktop logo.
+local CURSOR_PNG_BASE64 = table.concat({
+    "iVBORw0KGgoAAAANSUhEUgAAAA8AAAAPCAMAAAAMCGV4AAAAIVBMVEX////////+",
+    "/f/8+f/w3f/pzv/YqP+oPP/BdP+rQv/brv+ZmkppAAAAAXRSTlMAQObYZgAA",
+    "AFRJREFUCNdlj0kCwCAIA0nAjf8/uLHWQ3Uuo0QUzSYAAduAHiWc2NvaJnUVwN4W",
+    "/S186Tqh2LUYyRyywxBykkw5YCwyJ3LhlZ/95/3X++d81/y//z2YzwNnOyg/",
+    "VgAAAABJRU5ErkJggg=="
+})
+
+local function decodeBase64(value)
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local lookup = {}
+    for index = 1, #alphabet do
+        lookup[alphabet:sub(index, index)] = index - 1
+    end
+    local output, buffer, bitCount = {}, 0, 0
+    for index = 1, #value do
+        local digit = lookup[value:sub(index, index)]
+        if digit then
+            buffer = buffer * 64 + digit
+            bitCount = bitCount + 6
+            if bitCount >= 8 then
+                bitCount = bitCount - 8
+                output[#output + 1] = string.char(
+                    math.floor(buffer / (2 ^ bitCount)) % 256)
+                buffer = buffer % (2 ^ bitCount)
+            end
+        end
+    end
+    return table.concat(output)
+end
+
+local CURSOR_PNG = decodeBase64(CURSOR_PNG_BASE64)
+
 local STATUS_RU = {
     OFFLINE = "НЕ В СЕТИ",
     ONLINE = "В СЕТИ",
@@ -408,42 +445,12 @@ local function createCursorSprite(ctx, x, y, theme)
     local cursor = ctx.ui.raw("Texture", {
         gui = true, x = x - half, y = y - half, z = 120,
         sizeX = CURSOR_TEXTURE_SIZE, sizeY = CURSOR_TEXTURE_SIZE,
-        color = -1, opacity = 1, culling = false,
+        color = theme.white, opacity = 1, culling = false,
         depthTest = false, depthMask = false
     })
-    objectCall(cursor, "setImageSize", CURSOR_TEXTURE_SIZE, CURSOR_TEXTURE_SIZE)
-
-    local pixels = {}
-    local center = (CURSOR_TEXTURE_SIZE + 1) / 2
-    -- TextureObject.setPixel ultimately accepts a signed Java int. Lua's
-    -- positive 0xFFFFFFFF is outside that range and AP rejects it, leaving
-    -- only the transparent pixels. Express opaque ARGB as signed int32.
-    local white = -1
-    local purple = ((tonumber(theme.purple) or 0xA83CFF) % 0x1000000)
-        - 0x1000000
-    for py = 1, CURSOR_TEXTURE_SIZE do
-        pixels[py] = {}
-        for px = 1, CURSOR_TEXTURE_SIZE do
-            local dx, dy = px - center, py - center
-            local distanceSquared = dx * dx + dy * dy
-            local color = 0x00000000
-            if distanceSquared <= 49 then color = white end
-            if distanceSquared <= 30.25 then color = purple end
-            if distanceSquared <= 4 then color = white end
-            pixels[py][px] = color
-        end
-    end
-
-    -- One bulk call avoids sending hundreds of overlay updates. Retain a
-    -- compatibility fallback in case a server exposes only setPixel().
-    local setOk = objectCall(cursor, "setPixels", 1, 1, pixels)
-    if not setOk then
-        for py = 1, CURSOR_TEXTURE_SIZE do
-            for px = 1, CURSOR_TEXTURE_SIZE do
-                objectCall(cursor, "setPixel", px, py, pixels[py][px])
-            end
-        end
-    end
+    local loaded = objectCall(cursor, "load", CURSOR_PNG)
+    if not loaded then error("cannot load embedded storage cursor PNG", 0) end
+    objectCall(cursor, "setSizes", CURSOR_TEXTURE_SIZE, CURSOR_TEXTURE_SIZE)
     return cursor
 end
 
@@ -813,8 +820,8 @@ local function drawPanel(ctx)
         }
     end
     -- Item objects in AP 0.8.2a can leak their render colour into following
-    -- Circle objects once setItem() is called. A single ARGB texture keeps the
-    -- same round white/purple cursor while isolating it from item rendering.
+    -- Circle objects once setItem() is called. The embedded PNG keeps the same
+    -- round white/purple cursor in its own native texture.
     widgets.cursorSprite = createCursorSprite(ctx, gridX, gridY, theme)
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
