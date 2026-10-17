@@ -2,7 +2,14 @@
 -- Usage: wget run <raw-url>/install.lua [glasses|server|all]
 
 local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/"
+local INSTALLER_VERSION = "2.1-cache-safe"
 local args = { ... }
+
+local cacheBuster = tostring(os.clock())
+if os.epoch then
+    local ok, value = pcall(os.epoch, "utc")
+    if ok and value then cacheBuster = tostring(value) end
+end
 
 local COLORS = colors or {
     white = 1, orange = 2, lime = 32, red = 16384,
@@ -105,7 +112,10 @@ for _, entry in ipairs(files) do
 end
 
 local function download(remotePath)
-    local url = REPOSITORY .. remotePath
+    -- raw.githubusercontent.com may cache the previous master revision for a
+    -- few minutes. A unique query per install guarantees that every project
+    -- file belongs to the version the user has just requested.
+    local url = REPOSITORY .. remotePath .. "?m2os=" .. cacheBuster
     local response, reason = http.get(url, {
         ["User-Agent"] = "M2OS-Installer/1.0"
     }, true)
@@ -120,7 +130,8 @@ local function download(remotePath)
     return data
 end
 
-writeLine(("Installing M2OS (%s)..."):format(mode), COLORS.lightBlue)
+writeLine(("Installing M2OS (%s, %s)..."):format(
+    mode, INSTALLER_VERSION), COLORS.lightBlue)
 
 for index, entry in ipairs(files) do
     local remotePath, target = entry[1], entry[2]
