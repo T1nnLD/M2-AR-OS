@@ -94,6 +94,7 @@ local state = {
     pointerY = nil,
     pointerDirty = false,
     lastPointerFlush = 0,
+    lastCursorVisualRefresh = 0,
     hoveredQueueSlot = nil,
     query = "",
     appliedQuery = "",
@@ -395,7 +396,26 @@ local function positionPointerAtSelected()
     state.pointerY = widgets.gridY + row * widgets.slotSize + widgets.slotSize / 2
 end
 
-local function updatePanel(ctx)
+local function placeCursorLayer(object, z, color, restoreVisual)
+    objectCall(object, "setPos", state.pointerX, state.pointerY, z)
+    if restoreVisual then
+        -- AP 0.8.2a can occasionally retain a stale blended opacity after a
+        -- large overlay update. Periodically reassert it instead of trusting
+        -- only the value used during creation.
+        objectCall(object, "setColor", color)
+        objectCall(object, "setOpacity", 1)
+    end
+end
+
+local function placeCursor(widgets, theme, restoreVisual)
+    if not widgets or not state.pointerX or not state.pointerY then return end
+    placeCursorLayer(widgets.cursorBackdrop, 97, 0x080A12, restoreVisual)
+    placeCursorLayer(widgets.cursorRing, 98, theme.white, restoreVisual)
+    placeCursorLayer(widgets.cursorDot, 99, theme.purple, restoreVisual)
+    if restoreVisual then state.lastCursorVisualRefresh = util.epoch() end
+end
+
+local function updatePanel(ctx, restoreCursor)
     local widgets = state.widgets
     if not widgets then return end
     local theme = ctx.config.theme
@@ -626,7 +646,7 @@ local function updatePanel(ctx)
     end
 
     if state.pointerX and state.pointerY then
-        objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 97)
+        placeCursor(widgets, theme, restoreCursor ~= false)
         state.pointerDirty = false
     end
 end
@@ -760,9 +780,19 @@ local function drawPanel(ctx)
             object = ctx.ui.text(x, y, "", theme.purple, 0.56, 93)
         }
     end
+    -- A solid dark backplate plus an opaque ring and centre dot keeps the
+    -- pointer readable over both item sprites and transparent UI elements.
+    widgets.cursorBackdrop = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 97, radius = 5.5,
+        filled = true, color = 0x080A12, opacity = 1
+    })
     widgets.cursorRing = ctx.ui.raw("Circle", {
-        gui = true, x = gridX, y = gridY, z = 97, radius = 4.5,
+        gui = true, x = gridX, y = gridY, z = 98, radius = 4.25,
         filled = false, borderWidth = 1.5, color = theme.white, opacity = 1
+    })
+    widgets.cursorDot = ctx.ui.raw("Circle", {
+        gui = true, x = gridX, y = gridY, z = 99, radius = 1.35,
+        filled = true, color = theme.purple, opacity = 1
     })
     if not state.pointerX or not state.pointerY then positionPointerAtSelected() end
     updatePanel(ctx)
@@ -1122,7 +1152,8 @@ local function movePointer(ctx, dx, dy)
     local now = util.epoch()
     if now - state.lastPointerFlush >= CURSOR_FLUSH_INTERVAL_MS then
         state.lastPointerFlush = now
-        objectCall(widgets.cursorRing, "setPos", state.pointerX, state.pointerY, 97)
+        placeCursor(widgets, ctx.config.theme,
+            now - state.lastCursorVisualRefresh >= 500)
         if ctx.system.flushOverlay then pcall(ctx.system.flushOverlay) end
     end
 end
@@ -1346,7 +1377,13 @@ end
 
 function app.update(ctx, now)
     if state.panelOpen and state.pointerDirty and state.widgets then
-        updatePanel(ctx)
+        -- Selection still needs repainting after movement, but the more
+        -- expensive cursor style reset is handled by the periodic guard below.
+        updatePanel(ctx, false)
+    end
+    if state.panelOpen and state.widgets and state.pointerX and state.pointerY
+            and now - state.lastCursorVisualRefresh >= 500 then
+        placeCursor(state.widgets, ctx.config.theme, true)
     end
     if state.panelOpen and state.drawAt and now >= state.drawAt then
         state.drawAt = nil
