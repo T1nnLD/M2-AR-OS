@@ -20,8 +20,8 @@ return {
     },
 
     tracker = {
-        range = 16,
-        intervalMs = 2100,
+        range = 128,
+        intervalMs = 100,
         maxTargets = 5,
         aggressiveOnly = true,
         boxThickness = 0.045
