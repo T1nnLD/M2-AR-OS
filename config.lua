@@ -23,9 +23,9 @@ return {
         range = 128,
         intervalMs = 100,
         maxTargets = 5,
-        -- all: every living mob, including passive and modded entities.
-        -- hostile: monster category/attacking mobs; aggressive: attacking only.
-        targetMode = "all",
+        -- true: aggressive mobs only (red).
+        -- false: all mobs; non-aggressive mobs are green.
+        aggressiveOnly = true,
         -- Optional adult dimensions for mobs with unusual proportions.
         -- Unknown mobs otherwise use an estimate from their current eyeHeight.
         entitySizes = {

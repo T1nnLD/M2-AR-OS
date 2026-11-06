@@ -79,14 +79,14 @@ local function clear(ctx)
     end
 end
 
-local function createMarker(ctx)
-    local marker = { parts = {} }
+local function createMarker(ctx, color)
+    local marker = { parts = {}, color = color }
     local thickness = ctx.config.tracker.boxThickness
     for index = 1, 24 do
         marker.parts[index] = ctx.ui.raw("Box", {
             gui = false, x = 0, y = 0, z = 0,
             sizeX = thickness, sizeY = thickness, sizeZ = thickness,
-            color = ctx.config.theme.red, opacity = 0.92,
+            color = color, opacity = 0.92,
             culling = false, depthTest = false, depthMask = false
         })
     end
@@ -94,10 +94,17 @@ local function createMarker(ctx)
         gui = false, x = 0, y = 0, z = 0,
         rotX = 45, rotY = 45, rotZ = 45,
         sizeX = 0.16, sizeY = 0.16, sizeZ = 0.16,
-        color = ctx.config.theme.red, opacity = 1,
+        color = color, opacity = 1,
         culling = false, depthTest = false, depthMask = false
     })
     return marker
+end
+
+local function setMarkerColor(marker, color)
+    if marker.color == color then return end
+    for _, part in ipairs(marker.parts) do part.setColor(color) end
+    marker.beacon.setColor(color)
+    marker.color = color
 end
 
 local function dimensions(entity, config)
@@ -135,13 +142,9 @@ local function isTarget(entity, config)
     if not tonumber(entity.x) or not tonumber(entity.y) or not tonumber(entity.z) then
         return false
     end
-    -- The old aggressiveOnly option is deliberately superseded: existing
-    -- installations keep config.lua on update and should get universal boxes.
-    local mode = config.targetMode or "all"
-    if mode == "aggressive" then return entity.aggressive == true end
-    if mode == "hostile" then
-        return entity.aggressive == true or entity.category == "monster"
-    end
+    -- Restore the original setting, including configs preserved by updates.
+    -- Missing settings keep the default of showing aggressive mobs only.
+    if config.aggressiveOnly ~= false then return entity.aggressive == true end
     return true
 end
 
@@ -238,11 +241,14 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
     for index = 1, math.min(ctx.config.tracker.maxTargets, #targets) do
         local entity = targets[index]
         local key = entity.uuid or tostring(entity.id or index)
+        local threat = entity.aggressive == true or entity.category == "monster"
+        local color = threat and ctx.config.theme.red or ctx.config.theme.green
         local marker = markers[key]
         if not marker then
-            marker = createMarker(ctx)
+            marker = createMarker(ctx, color)
             markers[key] = marker
         end
+        setMarkerColor(marker, color)
         local width, height = dimensions(entity, ctx.config.tracker)
         positionMarker(ctx, marker, eyeX + entity.x, eyeY + entity.y,
             eyeZ + entity.z, width, height)

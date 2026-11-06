@@ -38,11 +38,16 @@ m2os
 The first start creates `/m2os-state.cfg`. App switches selected through the
 radial menu are remembered there.
 
-THREAT BOXES marks living mobs of any mod, including passive and neutral mobs.
+THREAT BOXES supports living mobs of any mod, including passive and neutral mobs.
 Players, armor stands, dead mobs and nonliving entities are excluded. The nearest
-`tracker.maxTargets` mobs are shown (five by default). Existing `aggressiveOnly`
-settings are superseded by `tracker.targetMode`, which defaults to `"all"` even
-when updating an older config. Use `"hostile"` or `"aggressive"` to restrict it.
+`tracker.maxTargets` eligible mobs are shown (five by default).
+`tracker.aggressiveOnly = true` (the default) marks only mobs whose detector
+data reports `aggressive = true`. Set it to `false` to mark all mobs: threats
+are red and other mobs green. Neutral mobs change colour when their aggression
+changes; the whole frame and beacon are recoloured without recreating them.
+The obsolete `targetMode` setting is ignored. Basic scans do not expose mob
+category, so aggression is normally the available signal for threat colouring;
+a monster category is also honoured when a provider supplies it.
 AP 0.8.2a does not provide exact bounding-box dimensions; unknown mobs use an
 estimate based on eye height. For unusual proportions, add an adult size to
 `tracker.entitySizes`, for example `["modid:entity"] = { width = 2, height = 3 }`.
