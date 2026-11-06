@@ -14,6 +14,10 @@ if args[1] == "tracker" then
     local util = require("m2os.lib.util")
     local state = util.readTable(config.stateFile or "/m2os-state.cfg", {})
     print("THREAT BOXES DIAGNOSTICS")
+    print("Tracker revision: basic-scan-1")
+    if shell and type(shell.getRunningProgram) == "function" then
+        print("Launcher: " .. tostring(shell.getRunningProgram()))
+    end
     print("Enabled: " .. tostring(not (state.enabled and state.enabled.mob_tracker == false)))
     local detector = peripheral.find("environment_detector") or peripheral.find("environmentDetector")
     if not detector then print("Environment Detector: NOT FOUND") return end

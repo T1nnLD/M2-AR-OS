@@ -1,9 +1,13 @@
 -- M2OS installer for CC:Tweaked
--- Usage: wget run <raw-url>/install.lua [glasses|server|all]
+-- Usage: wget run <raw-url>/install.lua [glasses|server|all] [commit]
 
-local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/"
-local INSTALLER_VERSION = "2.4-safe-storage"
+local INSTALLER_VERSION = "2.5-pinned-updates"
 local args = { ... }
+local revision = args[2] or "master"
+if revision ~= "master" and not (revision:match("^%x+$") and #revision >= 7 and #revision <= 40) then
+    error("revision must be master or a Git commit hash (7-40 characters)", 0)
+end
+local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/" .. revision .. "/"
 
 local cacheBuster = tostring(os.clock())
 if os.epoch then
@@ -112,9 +116,8 @@ for _, entry in ipairs(files) do
 end
 
 local function download(remotePath)
-    -- raw.githubusercontent.com may cache the previous master revision for a
-    -- few minutes. A unique query per install guarantees that every project
-    -- file belongs to the version the user has just requested.
+    -- A commit revision pins all downloads to one immutable version. A query
+    -- also helps refresh master, but cannot prove which commit master serves.
     local url = REPOSITORY .. remotePath .. "?m2os=" .. cacheBuster
     local response, reason = http.get(url, {
         ["User-Agent"] = "M2OS-Installer/1.0"
@@ -132,6 +135,7 @@ end
 
 writeLine(("Installing M2OS (%s, %s)..."):format(
     mode, INSTALLER_VERSION), COLORS.lightBlue)
+print("Source revision: " .. revision)
 
 for index, entry in ipairs(files) do
     local remotePath, target = entry[1], entry[2]
@@ -215,7 +219,10 @@ end
 
 writeLine("", COLORS.white)
 writeLine("M2OS installed successfully.", COLORS.lime)
-if mode == "glasses" or mode == "all" then print("Start HUD:  m2os") end
+if mode == "glasses" or mode == "all" then
+    print("Start HUD:  /m2os.lua")
+    print("Tracker test: /m2os.lua tracker")
+end
 if mode == "server" or mode == "all" then
     print("Edit:       edit m2os/server_config.lua")
     print("Start:      m2os_server")

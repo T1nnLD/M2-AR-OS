@@ -22,6 +22,11 @@ same command again updates the code. Existing `m2os/config.lua` and
 `m2os/server_config.lua` are preserved; replaced program files receive a `.bak`
 backup.
 
+To install an exact revision, pass its commit hash after the role, for example
+`wget run <installer-url> glasses <commit>`. The installer prints the source
+revision and fetches every file from that commit. To avoid an older launcher
+elsewhere on the shell path, run `/m2os.lua` or `/m2os.lua tracker` explicitly.
+
 ## Start
 
 On the pocket computer inside the Smart Glasses:
