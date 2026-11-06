@@ -286,6 +286,27 @@ function Kernel:_shutdown()
     pcall(self.overlay.update)
 end
 
+function Kernel:_dispatchEvent(event)
+    local name = event[1]
+    if name == "keyboard_open" and self.inputMode ~= nil then
+        -- A fresh KeyboardScreen is a new input session. Recover even when
+        -- the previous close event was missed or an app retained its mode.
+        for _, owner in ipairs(self.appOrder) do
+            self:_invoke(owner, "onEvent", "keyboard_close")
+        end
+        self.inputMode = nil
+    end
+
+    local lifecycle = name == "keyboard_open" or name == "keyboard_close"
+    for _, owner in ipairs(self.appOrder) do
+        local consumed = self:_invoke(owner, "onEvent", table.unpack(event))
+        -- Screen lifecycle belongs to all apps, even when one modal consumes
+        -- the event. Mouse/key events still go only to their first handler.
+        if consumed and not lifecycle then break end
+    end
+    if name == "keyboard_close" then self.inputMode = nil end
+end
+
 function Kernel:loop()
     self.overlay.setAutoUpdate(false)
     self:_loadApps()
@@ -314,9 +335,7 @@ function Kernel:loop()
             self.overlay.update()
             timer = os.startTimer(0.05)
         else
-            for _, owner in ipairs(self.appOrder) do
-                if self:_invoke(owner, "onEvent", table.unpack(event)) then break end
-            end
+            self:_dispatchEvent(event)
         end
     end
     self:_shutdown()

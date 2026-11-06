@@ -254,7 +254,10 @@ function app.onEvent(ctx, event, ...)
             state.waitingClose = false
             ctx.ui.clear()
         elseif state.visible then
-            hide(ctx, true, true)
+            -- Closing KeyboardScreen cancels pointer selection. Executing here
+            -- could open an interactive app after its input screen was gone,
+            -- leaving inputMode claimed and swallowing the next menu opening.
+            hide(ctx, false, true)
         end
         return true
     elseif event == "glasses_key_pressed" then
@@ -275,11 +278,13 @@ function app.onEvent(ctx, event, ...)
         end
         return true
     elseif event == "player_mouse_move" and state.visible then
+        if not state.widgets then return true end
         local values = numericArguments(...)
         local dx, dy = values[#values - 1] or 0, values[#values] or 0
         movePointer(ctx, dx, dy)
         return true
     elseif event == "player_mouse_scroll" and state.visible then
+        if not state.widgets then return true end
         local values = numericArguments(...)
         local direction = values[1] or 1
         state.armed = true
@@ -289,6 +294,7 @@ function app.onEvent(ctx, event, ...)
         updateVisuals(ctx)
         return true
     elseif event == "player_mouse_click" and state.visible then
+        if not state.widgets then return true end
         hide(ctx, true, false)
         return true
     elseif event == "m2os_refresh" then

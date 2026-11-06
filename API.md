@@ -65,6 +65,13 @@ with `ctx.system.setInputMode(nil)` when the interactive window closes.
 - `resize(ctx, width, height)` runs after the glasses GUI size changes.
 - `stop(ctx)` runs before disable/shutdown.
 
+`keyboard_open` and `keyboard_close` are broadcast to every enabled app, even
+if another app returns `true`. Other input events still stop at the first
+handler returning `true`. A fresh `keyboard_open` closes any leftover modal
+session before opening the radial menu; `keyboard_close` releases input and
+cancels radial selection. Execute a radial item with a click, not by closing
+the Keyboard Screen.
+
 Three errors in a row disable a non-required app. Every overlay object created
 through `ctx.ui` belongs to the app and is removed automatically when the app is
 disabled. Apps must never call `overlay.clear()`.

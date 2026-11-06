@@ -108,6 +108,9 @@ state, server limits and whether zombies are detected within eight blocks.
 The radial menu reacts to the Keyboard module (`keyboard_open`, mouse movement,
 scroll and click) and to the Hotkey module (`glasses_key_pressed`). It stays open
 until an action is selected or the screen is closed; it has no idle timeout.
+Click to execute a pointed action. Closing KeyboardScreen with `Esc` cancels
+selection without opening an app. Screen open/close events are delivered to
+every app; a fresh screen also clears any modal input left by a missed close.
 
 With only a Hotkey module, a short press opens the menu, later short presses move
 to the next action, and a press held for at least 0.6 seconds runs it. This mode
