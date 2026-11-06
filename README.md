@@ -44,6 +44,10 @@ estimate based on eye height. For unusual proportions, add an adult size to
 The tracker reads the detector's server configuration and limits scans to its
 free radius and cooldown. Glasses cannot fuel scans beyond the free radius.
 Scan failures are reported in a HUD notification and the computer console.
+Scans use `detailed=false`: AP 0.8.2a still returns coordinates, health and eye
+height, without decoding nearby players' inventories and extra entity data.
+This avoids the detailed conversion path which can throw Java exceptions on
+some modpacks. Repeated scan errors back off to at most one attempt per 30s.
 Run `m2os tracker` with the HUD stopped to check the detector, saved enabled
 state, server limits and whether zombies are detected within eight blocks.
 

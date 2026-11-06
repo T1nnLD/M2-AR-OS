@@ -16,6 +16,7 @@ local warned = false
 local scanRange
 local scanInterval
 local lastScanWarning
+local scanBackoff = 0
 
 local function scanWarning(ctx, message)
     if lastScanWarning == message then return end
@@ -196,7 +197,11 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
         return
     end
 
-    local ok, entities, reason = pcall(detector.scanEntities, scanRange, true)
+    -- AP's detailed=true path also decodes nearby player inventories, effects
+    -- and other metadata. One broken modded item/entity can fail the entire
+    -- scan before any mobs are returned. Basic scans still supply coordinates,
+    -- registry ID, health, eyeHeight, baby and aggressive, which boxes need.
+    local ok, entities, reason = pcall(detector.scanEntities, scanRange, false)
     if not ok or type(entities) ~= "table" then
         local message = tostring(ok and (reason or "scan returned no data") or entities)
         local lower = message:lower()
@@ -206,6 +211,8 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
         else
             clear(ctx)
             scanWarning(ctx, message)
+            -- Do not hammer a Java exception at the configured 100ms rate.
+            scanBackoff = math.min(30000, math.max(2000, scanBackoff * 2))
             if lower:find("radius", 1, true) or lower:find("fuel", 1, true) then
                 -- Compatibility fallback when getConfiguration is absent.
                 scanRange = math.max(1, math.floor(scanRange / 2))
@@ -215,6 +222,7 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
         end
         return
     end
+    scanBackoff = 0
 
     local targets = {}
     for _, entity in pairs(entities) do
@@ -255,13 +263,14 @@ function app.start()
     scanRange = nil
     scanInterval = nil
     lastScanWarning = nil
+    scanBackoff = 0
 end
 
 function app.update(ctx, now)
     if now < nextScan then return end
     local x, y, z = ctx.system.getEyePosition()
     if x and y and z then scan(ctx, x, y, z) end
-    nextScan = math.max(nextScan, now + (scanInterval or 2100))
+    nextScan = math.max(nextScan, now + math.max(scanInterval or 2100, scanBackoff))
 end
 
 function app.stop(ctx)

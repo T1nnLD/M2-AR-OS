@@ -32,7 +32,8 @@ if args[1] == "tracker" then
             end
         end
     end
-    local ok, entities, reason = pcall(detector.scanEntities, math.floor(range), true)
+    print("Scan mode: BASIC (no inventory/effects)")
+    local ok, entities, reason = pcall(detector.scanEntities, math.floor(range), false)
     if not ok or type(entities) ~= "table" then
         print("Scan failed: " .. tostring(ok and reason or entities))
         return
