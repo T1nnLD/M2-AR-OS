@@ -329,11 +329,22 @@ function Kernel:loop()
 
     local lastTick = util.epoch()
     local timer = os.startTimer(0.05)
+    local nextTickAt = lastTick + 50
     while self.running do
         local event = { os.pullEventRaw() }
+        local frameTimer = event[1] == "timer" and event[2] == timer
         if event[1] == "terminate" then
             self.running = false
-        elseif event[1] == "timer" and event[2] == timer then
+        elseif not frameTimer then
+            self:_dispatchEvent(event)
+        end
+
+        -- A yielding AP method inside an input callback waits for its own
+        -- task_complete event. The frame timer can fire during that wait and
+        -- never reach this loop. Recover by the deadline after every callback,
+        -- otherwise one hand action can freeze all app updates permanently.
+        if self.running and (frameTimer or util.epoch() >= nextTickAt) then
+            if os.cancelTimer then os.cancelTimer(timer) end
             local now = util.epoch()
             local oldWidth, oldHeight = self.width, self.height
             self:_measure()
@@ -347,9 +358,10 @@ function Kernel:loop()
             end
             lastTick = now
             self.overlay.update()
+            -- Schedule from completion rather than issuing catch-up frames
+            -- in a burst after a slow native operation.
+            nextTickAt = util.epoch() + 50
             timer = os.startTimer(0.05)
-        else
-            self:_dispatchEvent(event)
         end
     end
     self:_shutdown()

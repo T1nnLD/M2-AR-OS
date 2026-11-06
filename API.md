@@ -65,6 +65,12 @@ with `ctx.system.setInputMode(nil)` when the interactive window closes.
 - `resize(ctx, width, height)` runs after the glasses GUI size changes.
 - `stop(ctx)` runs before disable/shutdown.
 
+The frame loop checks its next deadline after input callbacks as well as timer
+events. A native peripheral call may consume the pending frame timer while
+waiting for `task_complete`; returning from that call still resumes app updates
+and rearms the timer. Slow calls delay a frame but cannot permanently disable
+future frames by swallowing that one event.
+
 `keyboard_open` and `keyboard_close` are broadcast to every enabled app, even
 if another app returns `true`. Mouse and keyboard input first goes to the app
 whose ID matches the current input mode, then to other handlers by priority
