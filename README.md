@@ -33,6 +33,15 @@ m2os
 The first start creates `/m2os-state.cfg`. App switches selected through the
 radial menu are remembered there.
 
+THREAT BOXES marks living mobs of any mod, including passive and neutral mobs.
+Players, armor stands, dead mobs and nonliving entities are excluded. The nearest
+`tracker.maxTargets` mobs are shown (five by default). Existing `aggressiveOnly`
+settings are superseded by `tracker.targetMode`, which defaults to `"all"` even
+when updating an older config. Use `"hostile"` or `"aggressive"` to restrict it.
+AP 0.8.2a does not provide exact bounding-box dimensions; unknown mobs use an
+estimate based on eye height. For unusual proportions, add an adult size to
+`tracker.entitySizes`, for example `["modid:entity"] = { width = 2, height = 3 }`.
+
 The radial menu reacts to the Keyboard module (`keyboard_open`, mouse movement,
 scroll and click) and to the Hotkey module (`glasses_key_pressed`). It stays open
 until an action is selected or the screen is closed; it has no idle timeout.

@@ -65,17 +65,49 @@ local function createMarker(ctx)
     return marker
 end
 
-local function dimensions(entity)
-    local known = DIMENSIONS[entity.name]
+local function dimensions(entity, config)
+    local overrides = type(config.entitySizes) == "table" and config.entitySizes or {}
+    local known = overrides[entity.name] or DIMENSIONS[entity.name]
     local width, height
-    if known then
-        width, height = known[1], known[2]
-    else
-        height = math.max(0.6, (entity.eyeHeight or 1.4) + 0.25)
-        width = math.max(0.55, math.min(1.1, height * 0.46))
+    if type(known) == "table" then
+        width, height = tonumber(known.width or known[1]), tonumber(known.height or known[2])
+        if width and height and width > 0 and height > 0 then
+            if entity.baby then return width * 0.65, height * 0.65 end
+            return width, height
+        end
     end
-    if entity.baby then return width * 0.65, height * 0.65 end
+
+    -- AP 0.8.2a exposes eyeHeight but not the entity's bounding box. Use the
+    -- current eye height for unknown registry IDs, including modded mobs.
+    -- It already reflects baby size, so do not scale babies a second time.
+    local eyeHeight = tonumber(entity.eyeHeight)
+    if eyeHeight and eyeHeight > 0 then
+        height = math.max(0.2, eyeHeight * 1.15)
+    else
+        height = entity.baby and 0.9 or 1.8
+    end
+    width = math.max(0.2, height * 0.46)
     return width, height
+end
+
+local function isTarget(entity, config)
+    if type(entity) ~= "table" then return false end
+    -- scanEntities normally returns living entities. health/maxHealth also
+    -- make this safe for providers which include items or projectiles.
+    if not tonumber(entity.health) or tonumber(entity.health) <= 0 then return false end
+    if entity.name == "minecraft:player" or entity.name == "minecraft:armor_stand"
+            or entity.isPlayer == true then return false end
+    if not tonumber(entity.x) or not tonumber(entity.y) or not tonumber(entity.z) then
+        return false
+    end
+    -- The old aggressiveOnly option is deliberately superseded: existing
+    -- installations keep config.lua on update and should get universal boxes.
+    local mode = config.targetMode or "all"
+    if mode == "aggressive" then return entity.aggressive == true end
+    if mode == "hostile" then
+        return entity.aggressive == true or entity.category == "monster"
+    end
+    return true
 end
 
 local function positionMarker(ctx, marker, x, y, z, width, height)
@@ -137,14 +169,8 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
 
     local targets = {}
     for _, entity in pairs(entities) do
-        local hostile
-        if ctx.config.tracker.aggressiveOnly then
-            hostile = entity.aggressive == true
-        else
-            hostile = entity.aggressive == true or entity.category == "monster"
-        end
-        if hostile and entity.x and entity.y and entity.z
-                and (not entity.health or entity.health > 0) then
+        if isTarget(entity, ctx.config.tracker) then
+            entity.x, entity.y, entity.z = tonumber(entity.x), tonumber(entity.y), tonumber(entity.z)
             entity._distanceSquared = entity.x * entity.x + entity.y * entity.y + entity.z * entity.z
             targets[#targets + 1] = entity
         end
@@ -160,7 +186,7 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
             marker = createMarker(ctx)
             markers[key] = marker
         end
-        local width, height = dimensions(entity)
+        local width, height = dimensions(entity, ctx.config.tracker)
         positionMarker(ctx, marker, eyeX + entity.x, eyeY + entity.y,
             eyeZ + entity.z, width, height)
         visible[key] = true
