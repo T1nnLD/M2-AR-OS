@@ -9,10 +9,11 @@ table.insert(package.searchers or package.loaders, 1, function(name)
 end)
 package.path = './?.lua;./?/init.lua;' .. package.path
 local calls, now = {}, 0
+local reads = 0
 os.epoch = function() return now end
 local native = {
-    pingSmartChest = function() return true, 5 end,
-    smartHandPos = function(hand) return hand, 0, 0, 0, 0 end,
+    pingSmartChest = function() reads=reads+1 return true, 5 end,
+    smartHandPos = function(hand) reads=reads+1 return hand, 0, 0, 0, 0 end,
     smartHandMove = function(hand, position)
         calls[#calls+1] = {method='move',hand=hand,position=position}
         return true
@@ -76,6 +77,7 @@ assert(not broken:action(1,'attack'), 'native error must not escape adapter')
 smartglasses = native
 keys = {escape=1,r=2,one=3,two=4,three=5,four=6,five=7}
 local texts, menu, services, mode = {}, {}, {}, nil
+local notices = {}
 local theme = {background=0x101020,purple=0xA347F5,blue=0x399BFF,
     white=0xFFFFFF,gray=0xB8C2D0,red=0xFF3038,green=0x43E38C,amber=0xFFB84A}
 local function object()
@@ -85,6 +87,7 @@ local ctx = {
     config={theme=theme},
     ui={clear=function() texts={} end,
         rectangle=object,
+        textureRect=object,
         text=function(x,y,value)
             texts[value]={x=x,y=y}
             return object()
@@ -95,18 +98,20 @@ local ctx = {
         setInputMode=function(value) mode=value end,
         getModule=function() return {} end,
         flushOverlay=function() end},
-    notify=function() end,
+    notify=function(value) notices[#notices+1]=value end,
     menu={add=function(action) menu[action.id]=action end},
     services={provide=function(name, service) services[name]=service end}
 }
 local app=require('m2os.apps.smart_chestplate')
 calls={}
+reads=0
 app.start(ctx)
 app.update(ctx,0)
 assert(#calls==0 and mode==nil, 'install/start must not call any native action')
 menu['smart_chestplate.panel'].run()
 assert(mode=='smart_chestplate')
-assert(#calls==0, 'opening must not read inventory or mutate hands')
+assert(#calls==0 and reads==0, 'opening must not call native API')
+assert(texts['НАГРУДНИК · EXPERIMENTAL'], 'panel must appear in the opening callback')
 now=200
 app.update(ctx,now)
 assert(texts['НАГРУДНИК · EXPERIMENTAL'])
@@ -120,6 +125,8 @@ local function click(label)
     now=now+300
     app.update(ctx,now)
 end
+click('Проверить')
+assert(reads==2, 'probe and hand position must wait for the explicit Check button')
 click('Рука 3')
 click('12')
 click('В руку (стак)')
@@ -163,9 +170,76 @@ assert(services.smart_chestplate.status().open,'native list errors must not clos
 app.stop(ctx)
 assert(mode==nil)
 
+-- Even a missing/throwing chest API cannot prevent the first frame.
+local originalProbe=native.pingSmartChest
+native.pingSmartChest=function() error('broken equipment API') end
+menu['smart_chestplate.panel'].run()
+assert(mode=='smart_chestplate' and texts['НАГРУДНИК · EXPERIMENTAL'])
+px,py=400,250
+click('Проверить')
+assert(mode=='smart_chestplate' and texts['НАГРУДНИК · EXPERIMENTAL'])
+native.pingSmartChest=originalProbe
+
+-- Resize bursts must keep a bounded first-render deadline.
+for tick=1,5 do
+    now=now+50
+    app.resize(ctx)
+    app.update(ctx,now)
+end
+assert(texts['НАГРУДНИК · EXPERIMENTAL'], 'resize bursts must not postpone drawing forever')
+app.stop(ctx)
+
+-- Rendering failures must release input and report the actual draw error.
+local originalText=ctx.ui.text
+ctx.ui.text=function() error('test rendering failure') end
+menu['smart_chestplate.panel'].run()
+assert(mode==nil and not services.smart_chestplate.status().open)
+assert(notices[#notices]:find('test rendering failure',1,true))
+ctx.ui.text=originalText
+
 local Kernel=require('m2os.kernel')
 fs={exists=function(path) return path=='/m2os/apps/smart_chestplate.lua' end}
 local kernel=setmetatable({config={modules={}},apps={},appOrder={},actions={}},Kernel)
 kernel:_loadApps()
 assert(kernel.apps.smart_chestplate,'new app must load with preserved module list')
+
+-- Exercise the real radial -> panel handoff with separate UI ownership and
+-- a batched overlay, not just isolated app callbacks.
+local objects, snapshot, objectId = {}, {}, 0
+local overlay = { getGuiSize=function() return 800,500,1 end }
+local function create(properties)
+    objectId=objectId+1
+    local id=objectId
+    objects[id]=properties
+    return {getId=function() return id end,setPos=function() end,setColor=function() end,
+        setOpacity=function() end,setContent=function() end,setSizes=function() end,
+        setImageSize=function() end,setPixel=function() end}
+end
+for _,kind in ipairs({'Rectangle','Texture','Text','Circle'}) do overlay['create'..kind]=create end
+overlay.removeObject=function(id) objects[id]=nil end
+overlay.update=function()
+    snapshot={}
+    for _,properties in pairs(objects) do
+        if properties.content then snapshot[properties.content]=true end
+    end
+end
+native.modules={overlay=overlay,keyboard={setCaptureMouse=function() end}}
+local real=Kernel.new({theme=theme,stateFile='/test-state',modules={}})
+local radial=require('m2os.apps.radial_menu')
+real:register(app)
+real:register(radial)
+real:setEnabled(app.id,true)
+real:setEnabled(radial.id,true)
+reads=0
+real:_dispatchEvent({'keyboard_open'})
+now=now+200
+radial.update(real.apps.radial_menu.context,now)
+real:_dispatchEvent({'player_mouse_move',0,-40})
+real:_dispatchEvent({'player_mouse_click',1})
+assert(real.inputMode=='smart_chestplate')
+assert(snapshot['НАГРУДНИК · EXPERIMENTAL'], 'panel must be flushed during real radial handoff')
+assert(reads==0, 'real handoff must not wait for equipment API')
+real:_dispatchEvent({'keyboard_close'})
+overlay.update()
+assert(real.inputMode==nil and not snapshot['НАГРУДНИК · EXPERIMENTAL'])
 print('smart chestplate adapter, UI and registration tests: OK')

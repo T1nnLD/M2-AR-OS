@@ -8,7 +8,7 @@ local app = {
 }
 
 local state = {}
-local draw, close, refresh, perform
+local draw, render, close, refresh, perform
 local LABELS = { attack = "Удар", dig = "Копать", use = "Использовать",
     suck = "Подобрать", drop = "Выбросить" }
 
@@ -112,8 +112,14 @@ local function show(ctx)
     ctx.system.setInputMode(app.id)
     state.pointerX, state.pointerY = nil, nil
     state.widgets = nil
-    state.drawAt = util.epoch() + 180
-    refresh(ctx, false)
+    state.drawAt = nil
+    state.online = false
+    state.position, state.inventory = nil, nil
+    report(ctx, "Панель открыта. Нажми «Проверить» для подключения нагрудника.")
+    -- The radial menu already settled the current KeyboardScreen geometry.
+    -- Draw before any native chest call: smartHandPos creates a hand entity
+    -- in AP, so it is not an appropriate prerequisite for displaying a panel.
+    render(ctx)
 end
 
 draw = function(ctx)
@@ -140,10 +146,10 @@ draw = function(ctx)
             id = id, x = x, y = y, w = w, h = h, run = action
         }
     end
-    rect(0, 0, 420, 354, theme.background, 70)
+    ctx.ui.textureRect(left, top, 420 * scale, 354 * scale, theme.background, 1, 70)
     rect(0, 0, 420, 2, theme.purple, 72)
     text(12, 10, "НАГРУДНИК · EXPERIMENTAL", theme.white, 1)
-    text(12, 27, state.online and "Подключён / 5 рук" or "Не подключён / API недоступен",
+    text(12, 27, state.online and "Подключён / 5 рук" or "Нажми «Проверить» для подключения",
         state.online and theme.green or theme.amber)
     button("refresh", 305, 7, 102, 20, "Проверить", function() refresh(ctx, false) end)
 
@@ -195,6 +201,20 @@ draw = function(ctx)
     state.pointerY = util.clamp(state.pointerY or height / 2, top, top + 354 * scale)
     widgets.cursor = util.createTopCursor(ctx.ui, state.pointerX, state.pointerY, 90, theme)
     state.dirty = false
+end
+
+render = function(ctx)
+    local ok, err = pcall(function()
+        draw(ctx)
+        ctx.system.flushOverlay()
+    end)
+    if not ok then
+        -- A failed draw must not leave an invisible modal claiming input.
+        close(ctx)
+        ctx.notify("Нагрудник: ошибка интерфейса: " .. tostring(err), ctx.config.theme.red)
+        return false
+    end
+    return true
 end
 
 function app.start(ctx)
@@ -261,14 +281,16 @@ function app.update(ctx, now)
     if not state.open then return end
     if state.drawAt and now < state.drawAt then return end
     state.drawAt = nil
-    if state.dirty or not state.widgets then draw(ctx) end
+    if state.dirty or not state.widgets then render(ctx) end
 end
 
 function app.resize(ctx)
     if not state.open then return end
     ctx.ui.clear()
     state.widgets = nil
-    state.drawAt = util.epoch() + 180
+    -- Repeated resize packets must not push the first draw into the future
+    -- forever. Keep the initial deadline and draw using the latest geometry.
+    state.drawAt = state.drawAt or (util.epoch() + 180)
     state.dirty = true
 end
 

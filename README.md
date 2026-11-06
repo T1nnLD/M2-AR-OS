@@ -44,6 +44,9 @@ Wear AP's Smart Chestplate together with the glasses and install the Overlay
 and Keyboard modules. Select **НАГРУДНИК [EXP]** in the radial menu. No warehouse
 bridge or Inventory Manager is needed. The installer adds the app to existing
 installations too, without changing a preserved config's `modules` list.
+The panel appears immediately without calling the native chest API. Press
+**Проверить** to query the equipment and selected hand; unavailable equipment
+therefore cannot prevent the controls from being displayed.
 
 The panel selects one of five hands and displays its actual position and
 rotation. X/Y/Z buttons move it by 0.25 blocks, pitch/yaw buttons rotate it by
