@@ -20,8 +20,8 @@ return {
     },
 
     tracker = {
-        range = 16,
-        intervalMs = 2100,
+        range = 128,
+        intervalMs = 100,
         maxTargets = 5,
         -- all: every living mob, including passive and modded entities.
         -- hostile: monster category/attacking mobs; aggressive: attacking only.
