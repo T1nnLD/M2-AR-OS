@@ -13,6 +13,40 @@ local detector
 local markers = {}
 local nextScan = 0
 local warned = false
+local scanRange
+local scanInterval
+local lastScanWarning
+
+local function scanWarning(ctx, message)
+    if lastScanWarning == message then return end
+    lastScanWarning = message
+    print("[Threat Boxes] " .. message)
+    ctx.notify("Threat Boxes: " .. message, ctx.config.theme.amber)
+end
+
+local function configureScan(ctx)
+    scanRange = math.max(1, math.floor(tonumber(ctx.config.tracker.range) or 16))
+    scanInterval = math.max(100, tonumber(ctx.config.tracker.intervalMs) or 2100)
+    if type(detector.getConfiguration) ~= "function" then return end
+    local ok, config = pcall(detector.getConfiguration)
+    if not ok or type(config) ~= "table" or type(config.operations) ~= "table" then return end
+    for key, operation in pairs(config.operations) do
+        local name = tostring(key):lower():gsub("[^a-z]", "")
+        if name == "scanentities" and type(operation) == "table" then
+            -- Glasses have no fuel ability: paid scans fail even below the
+            -- maximum radius. Use the server's free radius and cooldown.
+            local free = tonumber(operation.maxFreeRadius)
+            local maximum = tonumber(operation.maxCostRadius)
+            if free and free >= 1 then scanRange = math.min(scanRange, math.floor(free)) end
+            if maximum and maximum >= 1 then scanRange = math.min(scanRange, math.floor(maximum)) end
+            scanInterval = math.max(scanInterval, (tonumber(operation.defaultCooldown) or 0) + 50)
+            if scanRange < (tonumber(ctx.config.tracker.range) or 16) then
+                scanWarning(ctx, "Server scan range: " .. scanRange .. " blocks")
+            end
+            return
+        end
+    end
+end
 
 local DIMENSIONS = {
     ["minecraft:spider"] = { 1.4, 0.9 },
@@ -149,7 +183,10 @@ local function positionMarker(ctx, marker, x, y, z, width, height)
 end
 
 local function scan(ctx, eyeX, eyeY, eyeZ)
-    detector = detector or findDetector()
+    if not detector then
+        detector = findDetector()
+        if detector then configureScan(ctx) end
+    end
     if not detector then
         clear(ctx)
         if not warned then
@@ -159,13 +196,25 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
         return
     end
 
-    local ok, entities = pcall(detector.scanEntities, ctx.config.tracker.range, true)
-    if not ok then
-        detector = nil
-        clear(ctx)
+    local ok, entities, reason = pcall(detector.scanEntities, scanRange, true)
+    if not ok or type(entities) ~= "table" then
+        local message = tostring(ok and (reason or "scan returned no data") or entities)
+        local lower = message:lower()
+        if lower:find("cooldown", 1, true) then
+            -- Cooldown is temporary; retain the last successful markers.
+            nextScan = math.max(nextScan, ctx.system.now and ctx.system.now() + scanInterval or nextScan)
+        else
+            clear(ctx)
+            scanWarning(ctx, message)
+            if lower:find("radius", 1, true) or lower:find("fuel", 1, true) then
+                -- Compatibility fallback when getConfiguration is absent.
+                scanRange = math.max(1, math.floor(scanRange / 2))
+            elseif not ok then
+                detector = nil
+            end
+        end
         return
     end
-    if type(entities) ~= "table" then return end
 
     local targets = {}
     for _, entity in pairs(entities) do
@@ -203,13 +252,16 @@ function app.start()
     detector = nil
     warned = false
     nextScan = 0
+    scanRange = nil
+    scanInterval = nil
+    lastScanWarning = nil
 end
 
 function app.update(ctx, now)
     if now < nextScan then return end
-    nextScan = now + ctx.config.tracker.intervalMs
     local x, y, z = ctx.system.getEyePosition()
     if x and y and z then scan(ctx, x, y, z) end
+    nextScan = math.max(nextScan, now + (scanInterval or 2100))
 end
 
 function app.stop(ctx)

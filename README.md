@@ -41,6 +41,11 @@ when updating an older config. Use `"hostile"` or `"aggressive"` to restrict it.
 AP 0.8.2a does not provide exact bounding-box dimensions; unknown mobs use an
 estimate based on eye height. For unusual proportions, add an adult size to
 `tracker.entitySizes`, for example `["modid:entity"] = { width = 2, height = 3 }`.
+The tracker reads the detector's server configuration and limits scans to its
+free radius and cooldown. Glasses cannot fuel scans beyond the free radius.
+Scan failures are reported in a HUD notification and the computer console.
+Run `m2os tracker` with the HUD stopped to check the detector, saved enabled
+state, server limits and whether zombies are detected within eight blocks.
 
 The radial menu reacts to the Keyboard module (`keyboard_open`, mouse movement,
 scroll and click) and to the Hotkey module (`glasses_key_pressed`). It stays open
