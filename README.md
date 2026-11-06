@@ -38,6 +38,41 @@ m2os
 The first start creates `/m2os-state.cfg`. App switches selected through the
 radial menu are remembered there.
 
+## Experimental Smart Chestplate app
+
+Wear AP's Smart Chestplate together with the glasses and install the Overlay
+and Keyboard modules. Select **НАГРУДНИК [EXP]** in the radial menu. No warehouse
+bridge or Inventory Manager is needed. The installer adds the app to existing
+installations too, without changing a preserved config's `modules` list.
+
+The panel selects one of five hands and displays its actual position and
+rotation. X/Y/Z buttons move it by 0.25 blocks, pitch/yaw buttons rotate it by
+15 degrees. The adapter rejects positions farther than ten blocks and calls
+`smartHandMove` directly, bypassing the broken AP 0.8.2a Lua `setPos` wrapper.
+**Убрать руку** returns only the selected hand to its origin.
+
+Select an inventory source slot, then **В руку (стак)** to transfer up to 64
+items to the selected hand. Slots 1–9 are the hotbar, 10–36 the main inventory.
+**В инвентарь** returns up to 64 items from that hand. Inventory names can be
+loaded explicitly with **Читать инв.** or `R`; they are not polled in the
+background. The source snapshot is invalidated after a transfer.
+
+**Удар**, **Копать**, **Использовать**, **Подобрать**, **Выбросить** each issue
+one native action for the selected hand when clicked. Actions use the hand's
+position and orientation, not the HUD crosshair. There is no automatic attack,
+mining or pickup loop. Mining can require repeated commands as block-breaking
+progress accumulates. Failures, zero transferred items, unavailable API and
+missing equipment are reported in the panel. Keys `1`–`5` select a hand; `Esc`
+closes the input screen. Mouse movement uses the same cursor as the radial menu.
+
+AP 0.8.2a's `smartChestList` returns the **player's inventory**, despite its
+name. It cannot reliably report the contents of the five hands. The panel
+therefore labels the grid as the player's source inventory and displays the
+last command per hand, not an invented hand inventory. This integration is
+experimental and must still be checked with the actual server/modpack.
+
+## Threat Boxes
+
 THREAT BOXES supports living mobs of any mod, including passive and neutral mobs.
 Players, armor stands, dead mobs and nonliving entities are excluded. The nearest
 `tracker.maxTargets` eligible mobs are shown (five by default).

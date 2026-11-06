@@ -63,6 +63,7 @@ return {
         "m2os.apps.desktop",
         "m2os.apps.storage",
         "m2os.apps.context",
+        "m2os.apps.smart_chestplate",
         "m2os.apps.mob_tracker",
         "m2os.apps.radial_menu"
     }

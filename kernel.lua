@@ -255,6 +255,11 @@ end
 
 function Kernel:_loadApps()
     for _, moduleName in ipairs(self.config.modules) do require(moduleName) end
+    -- config.lua is preserved on updates. Expose the newly installed built-in
+    -- app on existing glasses without rewriting the user's module list.
+    if fs.exists("/m2os/apps/smart_chestplate.lua") then
+        require("m2os.apps.smart_chestplate")
+    end
     for _, definition in pairs(api.getApps()) do self:register(definition) end
     table.sort(self.appOrder, function(a, b)
         return (a.definition.priority or 100) < (b.definition.priority or 100)

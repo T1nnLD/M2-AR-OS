@@ -65,6 +65,8 @@ local glasses = {
     { "api.lua", "/m2os/api.lua" },
     { "config.lua", "/m2os/config.lua", preserve = true },
     { "kernel.lua", "/m2os/kernel.lua" },
+    { "lib/smart_chestplate.lua", "/m2os/lib/smart_chestplate.lua" },
+    { "apps/smart_chestplate.lua", "/m2os/apps/smart_chestplate.lua" },
     { "apps/desktop.lua", "/m2os/apps/desktop.lua" },
     { "apps/storage.lua", "/m2os/apps/storage.lua" },
     { "apps/context.lua", "/m2os/apps/context.lua" },

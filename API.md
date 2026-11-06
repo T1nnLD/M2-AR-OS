@@ -93,6 +93,21 @@ disabled. Apps must never call `overlay.clear()`.
 Services are normal Lua tables and calls are local. They disappear automatically
 when their owner app stops.
 
+## Experimental Smart Chestplate service
+
+```lua
+local chest = ctx.services.get("smart_chestplate")
+chest.show()    -- Opens the interactive panel, requires Keyboard module.
+chest.hide()    -- Releases this app's input mode and removes its UI.
+chest.status()  -- { open = boolean, online = boolean, hand = 1..5 }
+```
+
+Loading this service performs no native equipment operations. The app handles
+manual actions through `m2os.lib.smart_chestplate`, which validates hand indexes,
+transfer slots and coordinates and catches native Lua/API errors. It never
+starts background combat/mining. `smartChestList` in AP 0.8.2a is treated as a
+player-inventory query, not a reliable five-hand inventory query.
+
 ## Storage service
 
 ```lua
