@@ -298,8 +298,22 @@ function Kernel:_dispatchEvent(event)
     end
 
     local lifecycle = name == "keyboard_open" or name == "keyboard_close"
+    local inputEvent = name == "key" or name == "key_up" or name == "char" or name == "paste"
+        or name == "player_mouse_move" or name == "player_mouse_click"
+        or name == "player_mouse_up" or name == "player_mouse_scroll"
+    local inputOwner
+    if inputEvent and self.inputMode then
+        for _, owner in ipairs(self.appOrder) do
+            if owner.definition.id == self.inputMode and owner.enabled then
+                inputOwner = owner
+                if self:_invoke(owner, "onEvent", table.unpack(event)) then return end
+                break
+            end
+        end
+    end
     for _, owner in ipairs(self.appOrder) do
-        local consumed = self:_invoke(owner, "onEvent", table.unpack(event))
+        local consumed
+        if owner ~= inputOwner then consumed = self:_invoke(owner, "onEvent", table.unpack(event)) end
         -- Screen lifecycle belongs to all apps, even when one modal consumes
         -- the event. Mouse/key events still go only to their first handler.
         if consumed and not lifecycle then break end

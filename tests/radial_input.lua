@@ -109,6 +109,17 @@ assert(received==0,"ordinary key events must not leak to another app")
 dispatch("keyboard_close")
 assert(received==1,"lifecycle events must reach every app")
 
+-- The active modal receives keys/clicks before an earlier consuming app.
+kernel.inputMode="second"
+kernel.appOrder[2].definition.onEvent=function() received=received+1 return true end
+dispatch("player_mouse_click",1)
+assert(received==2,"active modal must receive click before other consumers")
+dispatch("key",1)
+assert(received==3,"active modal must receive key before other consumers")
+dispatch("rednet_message",1,{})
+assert(received==3,"non-input events must retain normal priority ordering")
+kernel.inputMode=nil
+
 -- Hotkey-only control still uses long press to execute, without Keyboard.
 kernel.appOrder={radialOwner}
 keyboard=nil

@@ -65,8 +65,12 @@ one native action for the selected hand when clicked. Actions use the hand's
 position and orientation, not the HUD crosshair. There is no automatic attack,
 mining or pickup loop. Mining can require repeated commands as block-breaking
 progress accumulates. Failures, zero transferred items, unavailable API and
-missing equipment are reported in the panel. Keys `1`–`5` select a hand; `Esc`
-closes the input screen. Mouse movement uses the same cursor as the radial menu.
+missing equipment are reported in the panel. Buttons highlight on hover and
+show command feedback before waiting for AP. `Tab` selects a button and `Enter`
+activates it; the initial button is **Проверить**. Keys `1`–`5` select a hand;
+`Esc` closes the input screen. Mouse movement uses the same cursor as the radial
+menu. Button hit areas share the rendered GUI coordinates at every panel scale
+and stay active while a resize is pending.
 
 AP 0.8.2a's `smartChestList` returns the **player's inventory**, despite its
 name. It cannot reliably report the contents of the five hands. The panel

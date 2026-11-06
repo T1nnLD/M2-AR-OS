@@ -66,8 +66,9 @@ with `ctx.system.setInputMode(nil)` when the interactive window closes.
 - `stop(ctx)` runs before disable/shutdown.
 
 `keyboard_open` and `keyboard_close` are broadcast to every enabled app, even
-if another app returns `true`. Other input events still stop at the first
-handler returning `true`. A fresh `keyboard_open` closes any leftover modal
+if another app returns `true`. Mouse and keyboard input first goes to the app
+whose ID matches the current input mode, then to other handlers by priority
+until one returns `true`. A fresh `keyboard_open` closes any leftover modal
 session before opening the radial menu; `keyboard_close` releases input and
 cancels radial selection. Execute a radial item with a click, not by closing
 the Keyboard Screen.

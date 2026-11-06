@@ -12,6 +12,37 @@ local draw, render, close, refresh, perform
 local LABELS = { attack = "Удар", dig = "Копать", use = "Использовать",
     suck = "Подобрать", drop = "Выбросить" }
 
+local function numericArguments(...)
+    local result = {}
+    for _, value in ipairs({...}) do
+        if type(value) == "number" then result[#result+1] = value end
+    end
+    return result
+end
+
+local function buttonAtPointer()
+    local widgets = state.widgets
+    if not widgets then return end
+    for _, hit in ipairs(widgets.buttons) do
+        if state.pointerX >= hit.x and state.pointerX < hit.x+hit.w
+                and state.pointerY >= hit.y and state.pointerY < hit.y+hit.h then
+            return hit
+        end
+    end
+end
+
+local function highlight(ctx, hit)
+    local widgets = state.widgets
+    if not widgets then return end
+    state.focus = hit and hit.id or nil
+    if widgets.highlighted == hit then return end
+    if widgets.highlighted then widgets.highlighted.background.setColor(widgets.highlighted.color) end
+    if hit then hit.background.setColor(0x445470) end
+    widgets.highlighted = hit
+    widgets.hint.setContent(hit and ("Выбрано: " .. hit.label .. " · ЛКМ / Enter")
+        or "Tab/Enter: кнопки  1–5: рука  R: инвентарь  Esc: закрыть")
+end
+
 local function report(ctx, message, bad)
     state.message = tostring(message)
     state.bad = bad == true
@@ -104,14 +135,17 @@ local function show(ctx)
         ctx.notify("Сначала закрой текущее окно", ctx.config.theme.amber)
         return
     end
-    if not ctx.system.getModule("keyboard") then
+    local keyboard = ctx.system.getModule("keyboard")
+    if not keyboard then
         ctx.notify("Для панели нагрудника нужен модуль Keyboard", ctx.config.theme.amber)
         return
     end
+    if type(keyboard.setCaptureMouse) == "function" then pcall(keyboard.setCaptureMouse, true) end
     state.open = true
     ctx.system.setInputMode(app.id)
     state.pointerX, state.pointerY = nil, nil
     state.widgets = nil
+    state.focus = "refresh"
     state.drawAt = nil
     state.online = false
     state.position, state.inventory = nil, nil
@@ -140,10 +174,12 @@ draw = function(ctx)
             color, 1, z or 73)
     end
     local function button(id, x, y, w, h, label, action, selected)
-        rect(x, y, w, h, selected and theme.purple or 0x293044)
+        local color = selected and theme.purple or 0x293044
+        local background = rect(x, y, w, h, color)
         text(x + 4, y + 5, label)
         widgets.buttons[#widgets.buttons + 1] = {
-            id = id, x = x, y = y, w = w, h = h, run = action
+            id = id, x = left+x*scale, y = top+y*scale, w = w*scale, h = h*scale,
+            label = label, run = action, background = background, color = color
         }
     end
     ctx.ui.textureRect(left, top, 420 * scale, 354 * scale, theme.background, 1, 70)
@@ -196,11 +232,26 @@ draw = function(ctx)
     text(12, 295, util.short(label, 67), theme.gray, 0.72)
     text(12, 307, util.short(state.message or "", 67), state.bad and theme.red or theme.white, 0.72)
     text(12, 319, util.short("Последняя команда руки: " .. (state.receipts[state.hand] or "нет"), 67), theme.gray, 0.72)
-    text(12, 337, "1–5: рука  R: читать инв.  Esc: закрыть  |  команды разовые", theme.gray, 0.68)
+    widgets.hint = text(12, 337, "Tab/Enter: кнопки  1–5: рука  R: инвентарь  Esc: закрыть", theme.gray, 0.68)
     state.pointerX = util.clamp(state.pointerX or width / 2, left, left + 420 * scale)
     state.pointerY = util.clamp(state.pointerY or height / 2, top, top + 354 * scale)
     widgets.cursor = util.createTopCursor(ctx.ui, state.pointerX, state.pointerY, 90, theme)
+    for _, hit in ipairs(widgets.buttons) do
+        if hit.id == state.focus then highlight(ctx, hit) break end
+    end
     state.dirty = false
+end
+
+local function activate(ctx, hit)
+    if not hit then return end
+    state.focus = hit.id
+    report(ctx, "Выполняется: " .. hit.label)
+    -- Publish click feedback before a synchronous AP operation can yield.
+    if not render(ctx) then return end
+    print("[Smart Chestplate] button: " .. hit.id)
+    local ok, err = pcall(hit.run)
+    if not ok then report(ctx, err, true) end
+    if state.open then render(ctx) end
 end
 
 render = function(ctx)
@@ -234,13 +285,13 @@ function app.onEvent(ctx, event, ...)
     if not state.open then return end
     if event == "keyboard_close" then close(ctx) return true end
     if event == "player_mouse_move" then
-        local numbers = {}
-        for _, value in ipairs({...}) do if type(value) == "number" then numbers[#numbers+1] = value end end
+        local numbers = numericArguments(...)
         local w = state.widgets
         if w then
             state.pointerX = util.clamp(state.pointerX + (numbers[#numbers-1] or 0), w.left, w.left+420*w.scale)
             state.pointerY = util.clamp(state.pointerY + (numbers[#numbers] or 0), w.top, w.top+354*w.scale)
             util.moveTopCursor(w.cursor, state.pointerX, state.pointerY, 90)
+            highlight(ctx, buttonAtPointer())
             local now = util.epoch()
             if now >= (state.flushAt or 0) then
                 state.flushAt = now + 25
@@ -249,23 +300,34 @@ function app.onEvent(ctx, event, ...)
         end
         return true
     elseif event == "player_mouse_click" then
-        local button = ...
-        local w = state.widgets
-        if button == 1 and w then
-            local x, y = (state.pointerX-w.left)/w.scale, (state.pointerY-w.top)/w.scale
-            for _, hit in ipairs(w.buttons) do
-                if x >= hit.x and x < hit.x+hit.w and y >= hit.y and y < hit.y+hit.h then
-                    hit.run()
-                    break
-                end
-            end
+        local numbers = numericArguments(...)
+        local button = numbers[1]
+        if (button == 1 or button == 0) and state.widgets then
+            local hit = buttonAtPointer()
+            if hit then activate(ctx, hit)
+            else report(ctx, "Клик вне кнопки — наведи курсор до подсветки") render(ctx) end
         end
         return true
     elseif event == "key" then
-        local code, held = ...
+        local code = numericArguments(...)[1]
+        local held = false
+        for _, value in ipairs({...}) do if type(value) == "boolean" then held = value end end
         if held then return true end
         if code == keys.escape then close(ctx)
         elseif code == keys.r then refresh(ctx, true)
+        elseif keys.tab and code == keys.tab and state.widgets then
+            local buttons = state.widgets.buttons
+            local nextIndex = 1
+            for index, hit in ipairs(buttons) do
+                if hit.id == state.focus then nextIndex = index % #buttons + 1 break end
+            end
+            highlight(ctx, buttons[nextIndex])
+        elseif (keys.enter and code == keys.enter) or (keys.numPadEnter and code == keys.numPadEnter) then
+            if state.widgets then
+                for _, hit in ipairs(state.widgets.buttons) do
+                    if hit.id == state.focus then activate(ctx, hit) break end
+                end
+            end
         else
             for index, name in ipairs({"one", "two", "three", "four", "five"}) do
                 if code == keys[name] then selectHand(ctx, index) break end
@@ -286,8 +348,8 @@ end
 
 function app.resize(ctx)
     if not state.open then return end
-    ctx.ui.clear()
-    state.widgets = nil
+    -- Keep the displayed button geometry active until its replacement is
+    -- ready, rather than discarding all click targets during resize bursts.
     -- Repeated resize packets must not push the first draw into the future
     -- forever. Keep the initial deadline and draw using the latest geometry.
     state.drawAt = state.drawAt or (util.epoch() + 180)

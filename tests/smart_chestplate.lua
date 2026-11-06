@@ -75,13 +75,14 @@ local broken = Chest.new({smartHandAttack=function() error('Java test failure') 
 assert(not broken:action(1,'attack'), 'native error must not escape adapter')
 
 smartglasses = native
-keys = {escape=1,r=2,one=3,two=4,three=5,four=6,five=7}
+keys = {escape=1,r=2,one=3,two=4,three=5,four=6,five=7,tab=8,enter=9}
 local texts, menu, services, mode = {}, {}, {}, nil
 local notices = {}
+local guiWidth, guiHeight = 800, 500
 local theme = {background=0x101020,purple=0xA347F5,blue=0x399BFF,
     white=0xFFFFFF,gray=0xB8C2D0,red=0xFF3038,green=0x43E38C,amber=0xFFB84A}
 local function object()
-    return {setPos=function() end,setColor=function() end,setSizes=function() end}
+    return {setPos=function() end,setColor=function() end,setSizes=function() end,setContent=function() end}
 end
 local ctx = {
     config={theme=theme},
@@ -93,7 +94,7 @@ local ctx = {
             return object()
         end,
         raw=object},
-    system={getSize=function() return 800,500 end,
+    system={getSize=function() return guiWidth,guiHeight end,
         getInputMode=function() return mode end,
         setInputMode=function(value) mode=value end,
         getModule=function() return {} end,
@@ -116,12 +117,14 @@ now=200
 app.update(ctx,now)
 assert(texts['НАГРУДНИК · EXPERIMENTAL'])
 local px,py=400,250
-local function click(label)
+local function click(label, prefixed)
     local target=assert(texts[label],'button not found: '..label)
     local x,y=target.x+2,target.y+2
-    app.onEvent(ctx,'player_mouse_move',x-px,y-py)
+    if prefixed then app.onEvent(ctx,'player_mouse_move','back',x-px,y-py)
+    else app.onEvent(ctx,'player_mouse_move',x-px,y-py) end
     px,py=x,y
-    app.onEvent(ctx,'player_mouse_click',1)
+    if prefixed then app.onEvent(ctx,'player_mouse_click','back',1)
+    else app.onEvent(ctx,'player_mouse_click',1) end
     now=now+300
     app.update(ctx,now)
 end
@@ -196,6 +199,36 @@ menu['smart_chestplate.panel'].run()
 assert(mode==nil and not services.smart_chestplate.status().open)
 assert(notices[#notices]:find('test rendering failure',1,true))
 ctx.ui.text=originalText
+
+-- Click geometry must match rendered buttons when the panel is scaled down,
+-- and event metadata must not be mistaken for the numeric button/key code.
+guiWidth,guiHeight=360,240
+menu['smart_chestplate.panel'].run()
+px,py=guiWidth/2,guiHeight/2
+local beforeReads=reads
+click('Проверить',true)
+assert(reads==beforeReads+2,'prefixed click must dispatch Check on a scaled panel')
+click('Рука 4',true)
+assert(services.smart_chestplate.status().hand==4)
+click('27',true)
+local beforeTransfers=#calls
+click('В руку (стак)',true)
+assert(#calls==beforeTransfers+1 and calls[#calls].filter.fromSlot==27 and calls[#calls].filter.toSlot==4)
+app.resize(ctx)
+click('Рука 2',true)
+assert(services.smart_chestplate.status().hand==2,'displayed buttons must stay clickable while resize is pending')
+app.stop(ctx)
+menu['smart_chestplate.panel'].run()
+beforeReads=reads
+app.onEvent(ctx,'key','back',keys.enter,false)
+assert(reads==beforeReads+2,'Enter must activate the initially focused Check button')
+app.onEvent(ctx,'key','back',keys.enter,true)
+assert(reads==beforeReads+2,'held Enter must not repeat native commands')
+app.onEvent(ctx,'key',keys.tab,false)
+app.onEvent(ctx,'key',keys.enter,false)
+assert(services.smart_chestplate.status().hand==1,'Tab then Enter must select a hand')
+app.stop(ctx)
+guiWidth,guiHeight=800,500
 
 local Kernel=require('m2os.kernel')
 fs={exists=function(path) return path=='/m2os/apps/smart_chestplate.lua' end}
