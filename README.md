@@ -42,11 +42,16 @@ THREAT BOXES supports living mobs of any mod, including passive and neutral mobs
 Players, armor stands, dead mobs and nonliving entities are excluded. The nearest
 `tracker.maxTargets` eligible mobs are shown (five by default).
 `tracker.aggressiveOnly = true` (the default) marks only mobs whose detector
-data reports `aggressive = true`. Set it to `false` to mark all mobs: threats
-are red and other mobs green. Neutral mobs change colour when their aggression
-changes; the whole frame and beacon are recoloured without recreating them.
+data reports `aggressive = true`. Set it to `false` to mark all mobs: passive
+mobs are green, neutral mobs yellow, and aggressive mobs red. Neutral mobs
+change yellow to red on aggression and back when calm; the whole frame and
+beacon are recoloured without recreating them. Vanilla neutral types are built
+in. Add modded neutral types with `tracker.neutralMobs = { ["modid:entity"] = true }`;
+use `false` for a specific ID to override a built-in neutral type. The yellow
+colour uses `theme.yellow` (default `0xFFD54A`, also used with older configs).
 The obsolete `targetMode` setting is ignored. Basic scans do not expose mob
-category, so aggression is normally the available signal for threat colouring;
+category or neutral disposition, so aggression and the neutral type list are
+normally the available signals for colouring;
 a monster category is also honoured when a provider supplies it.
 AP 0.8.2a does not provide exact bounding-box dimensions; unknown mobs use an
 estimate based on eye height. For unusual proportions, add an adult size to

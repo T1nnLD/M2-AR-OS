@@ -11,6 +11,7 @@ return {
         background = 0x101020,
         red = 0xFF3038,
         green = 0x43E38C,
+        yellow = 0xFFD54A,
         amber = 0xFFB84A
     },
 
@@ -24,8 +25,13 @@ return {
         intervalMs = 100,
         maxTargets = 5,
         -- true: aggressive mobs only (red).
-        -- false: all mobs; non-aggressive mobs are green.
+        -- false: all mobs; passive green, neutral yellow, aggressive red.
         aggressiveOnly = true,
+        -- Extra neutral registry IDs for modded mobs. false removes a vanilla
+        -- type from the built-in neutral list. Aggression always turns red.
+        neutralMobs = {
+            -- ["modid:entity"] = true
+        },
         -- Optional adult dimensions for mobs with unusual proportions.
         -- Unknown mobs otherwise use an estimate from their current eyeHeight.
         entitySizes = {

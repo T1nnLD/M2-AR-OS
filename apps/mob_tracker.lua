@@ -62,6 +62,39 @@ local DIMENSIONS = {
     ["minecraft:endermite"] = { 0.5, 0.35 }
 }
 
+-- Basic AP scans expose aggression but no neutral disposition. Registry IDs
+-- identify vanilla neutral mobs; modded types can be added through config.
+local NEUTRAL_MOBS = {
+    ["minecraft:bee"] = true,
+    ["minecraft:cave_spider"] = true,
+    ["minecraft:dolphin"] = true,
+    ["minecraft:enderman"] = true,
+    ["minecraft:goat"] = true,
+    ["minecraft:iron_golem"] = true,
+    ["minecraft:llama"] = true,
+    ["minecraft:panda"] = true,
+    ["minecraft:piglin"] = true,
+    ["minecraft:polar_bear"] = true,
+    ["minecraft:spider"] = true,
+    ["minecraft:trader_llama"] = true,
+    ["minecraft:wolf"] = true,
+    ["minecraft:zombified_piglin"] = true
+}
+
+local function markerColor(ctx, entity)
+    -- Aggression takes precedence over both registry defaults and overrides.
+    if entity.aggressive == true then return ctx.config.theme.red end
+    local overrides = ctx.config.tracker.neutralMobs
+    local neutral
+    if type(overrides) == "table" then neutral = overrides[entity.name] end
+    if neutral == nil then
+        neutral = entity.neutral == true or NEUTRAL_MOBS[entity.name] == true
+    end
+    if neutral then return ctx.config.theme.yellow or 0xFFD54A end
+    if entity.category == "monster" then return ctx.config.theme.red end
+    return ctx.config.theme.green
+end
+
 local function findDetector()
     return peripheral.find("environment_detector")
         or peripheral.find("environmentDetector")
@@ -241,8 +274,7 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
     for index = 1, math.min(ctx.config.tracker.maxTargets, #targets) do
         local entity = targets[index]
         local key = entity.uuid or tostring(entity.id or index)
-        local threat = entity.aggressive == true or entity.category == "monster"
-        local color = threat and ctx.config.theme.red or ctx.config.theme.green
+        local color = markerColor(ctx, entity)
         local marker = markers[key]
         if not marker then
             marker = createMarker(ctx, color)
