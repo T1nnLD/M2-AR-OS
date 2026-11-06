@@ -25,12 +25,17 @@ return {
         intervalMs = 100,
         maxTargets = 5,
         -- true: aggressive mobs only (red).
-        -- false: all mobs; passive green, neutral yellow, aggressive red.
+        -- false: all mobs; passive green, neutral yellow, hostile/attacking red.
         aggressiveOnly = true,
         -- Extra neutral registry IDs for modded mobs. false removes a vanilla
         -- type from the built-in neutral list. Aggression always turns red.
         neutralMobs = {
             -- ["modid:entity"] = true
+        },
+        -- Extra always-hostile registry IDs for modded mobs. Vanilla hostile
+        -- types (e.g. zombies) remain red even before they acquire a target.
+        hostileMobs = {
+            -- ["modid:monster"] = true
         },
         -- Optional adult dimensions for mobs with unusual proportions.
         -- Unknown mobs otherwise use an estimate from their current eyeHeight.

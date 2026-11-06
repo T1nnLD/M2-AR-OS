@@ -81,6 +81,20 @@ local NEUTRAL_MOBS = {
     ["minecraft:zombified_piglin"] = true
 }
 
+-- Basic scans omit category. Keep hostile disposition separate from current
+-- aggression so an idle zombie does not appear friendly. Exact registry IDs
+-- avoid classifying neutral zombified piglins or zombie horses by substring.
+local HOSTILE_MOBS = {}
+for _, name in ipairs({
+    "zombie", "zombie_villager", "husk", "drowned",
+    "skeleton", "stray", "bogged", "wither_skeleton", "creeper",
+    "slime", "magma_cube", "blaze", "breeze", "ghast", "witch",
+    "pillager", "vindicator", "evoker", "vex", "ravager",
+    "guardian", "elder_guardian", "silverfish", "endermite", "phantom",
+    "hoglin", "zoglin", "piglin_brute", "shulker", "warden",
+    "wither", "ender_dragon"
+}) do HOSTILE_MOBS["minecraft:" .. name] = true end
+
 local function markerColor(ctx, entity)
     -- Aggression takes precedence over both registry defaults and overrides.
     if entity.aggressive == true then return ctx.config.theme.red end
@@ -91,7 +105,13 @@ local function markerColor(ctx, entity)
         neutral = entity.neutral == true or NEUTRAL_MOBS[entity.name] == true
     end
     if neutral then return ctx.config.theme.yellow or 0xFFD54A end
-    if entity.category == "monster" then return ctx.config.theme.red end
+    local hostileOverrides = ctx.config.tracker.hostileMobs
+    local hostile
+    if type(hostileOverrides) == "table" then hostile = hostileOverrides[entity.name] end
+    if hostile == nil then
+        hostile = HOSTILE_MOBS[entity.name] == true or entity.category == "monster"
+    end
+    if hostile then return ctx.config.theme.red end
     return ctx.config.theme.green
 end
 
