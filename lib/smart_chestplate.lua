@@ -18,10 +18,10 @@ function Chest:call(method, ...)
         return false, "API недоступен: " .. method
     end
     local values = table.pack(pcall(self.native[method], ...))
-    if not values[1] then return false, tostring(values[2]) end
+    if not values[1] then return false, tostring(values[2]), "JAVA_EXCEPTION" end
     if values[2] == nil or values[2] == false then
         local reason = tostring(values[3] or "Действие не выполнено")
-        return false, ERRORS[reason] or reason
+        return false, ERRORS[reason] or reason, reason
     end
     return true, table.unpack(values, 2, values.n)
 end

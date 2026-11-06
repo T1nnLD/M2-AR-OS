@@ -17,6 +17,7 @@ local scanRange
 local scanInterval
 local lastScanWarning
 local scanBackoff = 0
+local lastSnapshot
 
 local function scanWarning(ctx, message)
     if lastScanWarning == message then return end
@@ -281,6 +282,7 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
     scanBackoff = 0
 
     local targets = {}
+    lastSnapshot = {entities=entities,x=eyeX,y=eyeY,z=eyeZ,at=ctx.system.now and ctx.system.now() or os.epoch("utc")}
     for _, entity in pairs(entities) do
         if isTarget(entity, ctx.config.tracker) then
             entity.x, entity.y, entity.z = tonumber(entity.x), tonumber(entity.y), tonumber(entity.z)
@@ -314,7 +316,7 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
     end
 end
 
-function app.start()
+function app.start(ctx)
     detector = nil
     warned = false
     nextScan = 0
@@ -322,6 +324,10 @@ function app.start()
     scanInterval = nil
     lastScanWarning = nil
     scanBackoff = 0
+    lastSnapshot = nil
+    if ctx and ctx.services then
+        ctx.services.provide("mob_scan", {latest=function() return lastSnapshot end})
+    end
 end
 
 function app.update(ctx, now)
@@ -334,6 +340,7 @@ end
 function app.stop(ctx)
     clear(ctx)
     detector = nil
+    lastSnapshot = nil
 end
 
 api.registerApp(app)

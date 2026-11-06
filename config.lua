@@ -45,6 +45,11 @@ return {
         boxThickness = 0.045
     },
 
+    chestplate = {
+        stateFile = "/m2os-chestplate.cfg",
+        attackRange = 8, -- Limited to 9; hands can move at most 10 blocks.
+    },
+
     context = {
         visibleSeconds = 5,
         dimension = "minecraft:overworld"

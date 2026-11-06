@@ -48,6 +48,13 @@ The panel appears immediately without calling the native chest API. Press
 **Проверить** to query the equipment and selected hand; unavailable equipment
 therefore cannot prevent the controls from being displayed.
 
+The app saves the verified connection, selected hand, source slot, last known
+hand positions, command feedback and autoattack switch in
+`/m2os-chestplate.cfg`. After a HUD restart it verifies that the chestplate is
+present, restores known hand positions and reconnects without another Check
+click. Item contents remain managed by AP; the file does not copy items.
+Existing installations use this state file even with a preserved older config.
+
 The panel selects one of five hands and displays its actual position and
 rotation. X/Y/Z buttons move it by 0.25 blocks, pitch/yaw buttons rotate it by
 15 degrees. The adapter rejects positions farther than ten blocks and calls
@@ -62,8 +69,7 @@ background. The source snapshot is invalidated after a transfer.
 
 **Удар**, **Копать**, **Использовать**, **Подобрать**, **Выбросить** each issue
 one native action for the selected hand when clicked. Actions use the hand's
-position and orientation, not the HUD crosshair. There is no automatic attack,
-mining or pickup loop. Mining can require repeated commands as block-breaking
+position and orientation, not the HUD crosshair. Mining can require repeated commands as block-breaking
 progress accumulates. Failures, zero transferred items, unavailable API and
 missing equipment are reported in the panel. Buttons highlight on hover and
 show command feedback before waiting for AP. `Tab` selects a button and `Enter`
@@ -71,6 +77,27 @@ activates it; the initial button is **Проверить**. Keys `1`–`5` selec
 `Esc` closes the input screen. Mouse movement uses the same cursor as the radial
 menu. Button hit areas share the rendered GUI coordinates at every panel scale
 and stay active while a resize is pending.
+
+**Авто: ВЫКЛ / ВКЛ** enables optional automatic attacks against the nearest
+living mob, including peaceful and modded mobs. Equip items/weapons in the hands
+using **В руку (стак)** first: AP rejects attacks from empty hands. The mode
+rotates through all five hands, skips empty ones and stops if none can attack.
+An Environment Detector in the glasses is required. The default radius is eight
+blocks (`chestplate.attackRange`, capped at nine and by the detector's free scan
+radius). Fresh Threat Boxes scans are shared; otherwise the app scans on its own
+and respects the server cooldown. Players and armor stands are excluded as
+targets; mobs beside another player are skipped because AP's raycast cannot
+filter player hits. Moving entities can still change a raycast's result.
+
+Autoattack continues when the panel is closed and resumes after a HUD restart
+only once the chestplate is verified. Turn the switch off to stop it or use
+manual movement/actions. A native API error stops the mode and is reported in
+the panel. Movement and attack happen on separate updates so a hand has time to
+reach its target.
+
+Invisible empty hands are expected in AP 0.8.2a: its
+[published hand renderer](https://github.com/IntelligenceModding/AdvancedPeripherals/blob/e3b0c0920954f9b683e2fc0a04813394a21e0306/src/main/java/de/srendi/advancedperipherals/common/entity/SmartChestHand.java)
+draws only a held item; the arm/hand model is still marked TODO.
 
 AP 0.8.2a's `smartChestList` returns the **player's inventory**, despite its
 name. It cannot reliably report the contents of the five hands. The panel

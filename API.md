@@ -113,13 +113,22 @@ when their owner app stops.
 local chest = ctx.services.get("smart_chestplate")
 chest.show()    -- Opens the interactive panel, requires Keyboard module.
 chest.hide()    -- Releases this app's input mode and removes its UI.
-chest.status()  -- { open = boolean, online = boolean, hand = 1..5 }
+chest.status()  -- { open, online, hand = 1..5, sourceSlot = 1..36, linked, autoAttack }
+chest.setAutoAttack(true) -- Opt-in nearest-mob attacks; false cancels pending work.
 ```
 
-Loading this service performs no native equipment operations. The app handles
+Loading this service performs no native equipment operations. A saved connection
+is verified on a later update, then known hand positions and the saved autoattack
+switch are restored. Settings are stored in `/m2os-chestplate.cfg` (override
+`chestplate.stateFile`; `false` disables saving). The app handles
 manual actions through `m2os.lib.smart_chestplate`, which validates hand indexes,
-transfer slots and coordinates and catches native Lua/API errors. It never
-starts background combat/mining. `smartChestList` in AP 0.8.2a is treated as a
+transfer slots and coordinates and catches native Lua/API errors. Automatic
+combat requires explicitly enabling its switch (which is persisted). There is
+no automatic mining. Combat continues outside the panel, shares fresh scans
+through the tracker's `mob_scan.latest()` service, and falls back to its own
+basic Environment Detector scans when the tracker is disabled. A snapshot holds
+`{ entities, x, y, z, at }`, where x/y/z are the world eye origin and at is UTC
+epoch milliseconds. `smartChestList` in AP 0.8.2a is treated as a
 player-inventory query, not a reliable five-hand inventory query.
 
 ## Storage service

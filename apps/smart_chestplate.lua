@@ -1,6 +1,7 @@
 local api = require("m2os.api")
 local util = require("m2os.lib.util")
 local Chest = require("m2os.lib.smart_chestplate")
+local Combat = require("m2os.lib.chestplate_combat")
 
 local app = {
     id = "smart_chestplate", name = "Умный нагрудник · эксперимент",
@@ -8,7 +9,7 @@ local app = {
 }
 
 local state = {}
-local draw, render, close, refresh, perform
+local draw, render, close, refresh, perform, toggleCombat
 local LABELS = { attack = "Удар", dig = "Копать", use = "Использовать",
     suck = "Подобрать", drop = "Выбросить" }
 
@@ -50,25 +51,61 @@ local function report(ctx, message, bad)
     if bad then print("[Smart Chestplate] " .. state.message) end
 end
 
+local function remember()
+    state.saveDirty = true
+    state.saveAt = state.saveAt or (util.epoch()+500)
+end
+
+local function saveState(ctx, force)
+    if not state.path or not state.saveDirty then return end
+    if not force and util.epoch() < (state.saveAt or 0) then return end
+    local payload = {version=1,hand=state.hand,sourceSlot=state.sourceSlot,linked=state.linked,
+        lastOnline=state.online,positions=state.positions,receipts=state.receipts,
+        autoAttack=state.combat.enabled}
+    local ok, written, err = pcall(util.writeTable,state.path,payload)
+    if ok and written then state.saveDirty=false state.saveAt=nil
+    else
+        state.saveAt=util.epoch()+5000
+        report(ctx,"Не удалось сохранить нагрудник: " .. tostring(ok and err or written),true)
+    end
+end
+
 local function selectHand(ctx, hand)
     state.hand = hand
     local ok, position = state.chest:position(hand)
     state.position = ok and position or nil
+    if ok then state.positions[hand]=position end
     if not ok then report(ctx, position, true) end
     state.dirty = true
+    remember()
 end
 
 refresh = function(ctx, inventory)
     local ok, result = state.chest:probe()
     state.online = ok
+    state.checkAt = util.epoch()+5000
     if not ok then
         state.position = nil
         state.inventory = nil
         report(ctx, result, true)
+        if state.combat.enabled then state.combat:stop(result) end
+        remember()
         return
     end
-    report(ctx, "Нагрудник подключён. Команды выполняются вручную.")
+    state.linked = true
+    local restoreError
+    if state.restorePending then
+        state.restorePending = false
+        for hand = 1, 5 do
+            if state.positions[hand] then
+                local moved, reason = state.chest:move(hand,state.positions[hand])
+                if not moved then restoreError=reason break end
+            end
+        end
+    end
+    report(ctx, "Нагрудник подключён. Состояние сохранено.")
     selectHand(ctx, state.hand)
+    if restoreError then report(ctx,"Не удалось восстановить положение рук: " .. tostring(restoreError),true) end
     if inventory then
         local listed, value = state.chest:inventory()
         if listed then
@@ -82,6 +119,7 @@ refresh = function(ctx, inventory)
 end
 
 local function move(ctx, field, delta)
+    if state.combat.enabled then report(ctx,"Выключи автоатаку перед ручным перемещением",true) return end
     if not state.position then report(ctx, "Сначала нажми «Проверить»", true) return end
     local nextPosition = {}
     for key, value in pairs(state.position) do nextPosition[key] = value end
@@ -104,9 +142,12 @@ local function transfer(ctx, load)
     else
         report(ctx, value, true)
     end
+    state.combat.blocked={}
+    remember()
 end
 
 perform = function(ctx, action)
+    if state.combat.enabled then report(ctx,"Выключи автоатаку перед ручными действиями",true) return end
     if not state.online then report(ctx, "Сначала подключи нагрудник и нажми «Проверить»", true) return end
     local now = util.epoch()
     -- One native action per explicit click, never repeated by update().
@@ -118,9 +159,11 @@ perform = function(ctx, action)
     local suffix = detail ~= nil and (" / " .. tostring(detail)) or ""
     report(ctx, LABELS[action] .. ": " .. tostring(result) .. suffix)
     if action == "drop" or action == "suck" or action == "use" then state.inventory = nil end
+    remember()
 end
 
 close = function(ctx)
+    saveState(ctx,true)
     state.open = false
     state.widgets, state.drawAt = nil, nil
     state.dirty = false
@@ -147,9 +190,12 @@ local function show(ctx)
     state.widgets = nil
     state.focus = "refresh"
     state.drawAt = nil
-    state.online = false
-    state.position, state.inventory = nil, nil
-    report(ctx, "Панель открыта. Нажми «Проверить» для подключения нагрудника.")
+    state.position = state.positions[state.hand]
+    state.inventory = nil
+    if state.linked then
+        state.checkAt = util.epoch()+50
+        report(ctx,"Подключение запомнено. Проверяю наличие нагрудника…")
+    else report(ctx, "Панель открыта. Нажми «Проверить» для подключения нагрудника.") end
     -- The radial menu already settled the current KeyboardScreen geometry.
     -- Draw before any native chest call: smartHandPos creates a hand entity
     -- in AP, so it is not an appropriate prerequisite for displaying a panel.
@@ -185,6 +231,8 @@ draw = function(ctx)
     ctx.ui.textureRect(left, top, 420 * scale, 354 * scale, theme.background, 1, 70)
     rect(0, 0, 420, 2, theme.purple, 72)
     text(12, 10, "НАГРУДНИК · EXPERIMENTAL", theme.white, 1)
+    button("auto", 205, 7, 94, 20, state.combat.enabled and "Авто: ВКЛ" or "Авто: ВЫКЛ",
+        function() toggleCombat(ctx) end,state.combat.enabled)
     text(12, 27, state.online and "Подключён / 5 рук" or "Нажми «Проверить» для подключения",
         state.online and theme.green or theme.amber)
     button("refresh", 305, 7, 102, 20, "Проверить", function() refresh(ctx, false) end)
@@ -209,6 +257,7 @@ draw = function(ctx)
         button(name, 216, 72 + (row - 1) * 20, 191, 18, LABELS[name], function() perform(ctx, name) end)
     end
     button("home", 12, 176, 88, 19, "Убрать руку", function()
+        if state.combat.enabled then report(ctx,"Сначала выключи автоатаку",true) return end
         local ok, reason = state.chest:move(state.hand, {x=0,y=0,z=0,pitch=0,yaw=0})
         if ok then selectHand(ctx, state.hand) report(ctx, "Рука возвращена в исходное положение")
         else report(ctx, reason, true) end
@@ -224,6 +273,7 @@ draw = function(ctx)
         button("slot" .. slot, x, y, 40, 17, tostring(slot) .. (item and " *" or ""), function()
             state.sourceSlot = index
             state.dirty = true
+            remember()
         end, state.sourceSlot == slot)
     end
     local item = state.inventory and (state.inventory[state.sourceSlot] or state.inventory[tostring(state.sourceSlot)])
@@ -231,7 +281,8 @@ draw = function(ctx)
         or (state.inventory and "Слот пуст" or "1–9: хотбар; 10–36: инвентарь. Чтение — по кнопке.")
     text(12, 295, util.short(label, 67), theme.gray, 0.72)
     text(12, 307, util.short(state.message or "", 67), state.bad and theme.red or theme.white, 0.72)
-    text(12, 319, util.short("Последняя команда руки: " .. (state.receipts[state.hand] or "нет"), 67), theme.gray, 0.72)
+    text(12, 319, util.short(state.combat.enabled and state.combat.message
+        or ("Последняя команда руки: " .. (state.receipts[state.hand] or "нет")),67), theme.gray, 0.72)
     widgets.hint = text(12, 337, "Tab/Enter: кнопки  1–5: рука  R: инвентарь  Esc: закрыть", theme.gray, 0.68)
     state.pointerX = util.clamp(state.pointerX or width / 2, left, left + 420 * scale)
     state.pointerY = util.clamp(state.pointerY or height / 2, top, top + 354 * scale)
@@ -268,16 +319,63 @@ render = function(ctx)
     return true
 end
 
+toggleCombat = function(ctx)
+    if state.combat.enabled then
+        state.combat:setEnabled(false)
+        report(ctx,"Автоатака выключена")
+    else
+        refresh(ctx,false)
+        if not state.online then return end
+        state.combat:setEnabled(true)
+        report(ctx,"Автоатака включена: все мобы, игроки исключены")
+    end
+    remember()
+    saveState(ctx,true)
+end
+
 function app.start(ctx)
-    state = { open = false, hand = 1, sourceSlot = 1, receipts = {},
+    local options=ctx.config.chestplate or {}
+    local path=options.stateFile
+    if path==nil then path="/m2os-chestplate.cfg" end
+    local ok,saved=true,{}
+    if path then ok,saved=pcall(util.readTable,path,{}) end
+    saved=ok and type(saved)=="table" and saved.version==1 and saved or {}
+    local function index(value,max)
+        return type(value)=="number" and value==value and value>=1 and value<=max and math.floor(value) or 1
+    end
+    local positions,receipts={},{}
+    for hand=1,5 do
+        local position=type(saved.positions)=="table" and saved.positions[hand]
+        if type(position)=="table" then
+            local copy,valid={},true
+            for _,key in ipairs({"x","y","z","pitch","yaw"}) do
+                local value=tonumber(position[key])
+                if not value or value~=value or math.abs(value)==math.huge then valid=false break end
+                copy[key]=value
+            end
+            if valid and copy.x*copy.x+copy.y*copy.y+copy.z*copy.z<=100 then positions[hand]=copy end
+        end
+        local receipt=type(saved.receipts)=="table" and saved.receipts[hand]
+        if type(receipt)=="string" then receipts[hand]=util.short(receipt,100) end
+    end
+    state = { open = false, hand = index(saved.hand,5), sourceSlot = index(saved.sourceSlot,36),
+        receipts = receipts, positions = positions, restorePending = true,
+        linked=saved.linked==true,path=path,
         chest = Chest.new(smartglasses), message = "", online = false }
+    state.combat=Combat.new(ctx,state.chest)
+    state.combat:setEnabled(saved.autoAttack==true)
+    if state.linked or state.combat.enabled then state.checkAt=util.epoch()+250 end
     ctx.menu.add({ id = "smart_chestplate.panel", label = "НАГРУДНИК [EXP]", order = 35,
         keepInput = true, checked = function() return state.open end,
         run = function() show(ctx) end })
     ctx.services.provide("smart_chestplate", {
         show = function() if not state.open then show(ctx) end end,
         hide = function() close(ctx) end,
-        status = function() return { open = state.open, online = state.online, hand = state.hand } end
+        status = function() return { open = state.open, online = state.online, hand = state.hand,
+            sourceSlot=state.sourceSlot,linked=state.linked,autoAttack=state.combat.enabled } end,
+        setAutoAttack = function(enabled)
+            if state.combat.enabled ~= (enabled==true) then toggleCombat(ctx) end
+        end
     })
 end
 
@@ -340,6 +438,20 @@ function app.onEvent(ctx, event, ...)
 end
 
 function app.update(ctx, now)
+    if state.checkAt and now>=state.checkAt then refresh(ctx,false) end
+    local enabled,message=state.combat.enabled,state.combat.message
+    state.combat:update(now,state.online)
+    if state.combat.lastPosition and state.positions[state.combat.lastHand]~=state.combat.lastPosition then
+        state.positions[state.combat.lastHand]=state.combat.lastPosition
+        if state.hand==state.combat.lastHand then state.position=state.combat.lastPosition end
+        remember()
+    end
+    if enabled~=state.combat.enabled then
+        remember()
+        report(ctx,state.combat.message,true)
+    end
+    if message~=state.combat.message then state.dirty=true end
+    saveState(ctx,false)
     if not state.open then return end
     if state.drawAt and now < state.drawAt then return end
     state.drawAt = nil
@@ -358,6 +470,7 @@ end
 
 function app.stop(ctx)
     close(ctx)
+    state.combat:setEnabled(false)
 end
 
 api.registerApp(app)

@@ -52,6 +52,10 @@ local native = {
     end
 }
 local Chest = require('m2os.lib.smart_chestplate')
+local util = require('m2os.lib.util')
+local disk = {}
+util.readTable = function(path, fallback) return disk[path] and util.copy(disk[path]) or fallback end
+util.writeTable = function(path, value) disk[path]=util.copy(value) return true end
 local chest = Chest.new(native)
 local ok, count = chest:probe()
 assert(ok and count==5)
@@ -98,10 +102,12 @@ local ctx = {
         getInputMode=function() return mode end,
         setInputMode=function(value) mode=value end,
         getModule=function() return {} end,
+        getEyePosition=function() return 0,0,0 end,
         flushOverlay=function() end},
     notify=function(value) notices[#notices+1]=value end,
     menu={add=function(action) menu[action.id]=action end},
-    services={provide=function(name, service) services[name]=service end}
+    services={provide=function(name, service) services[name]=service end,
+        get=function(name) return services[name] end}
 }
 local app=require('m2os.apps.smart_chestplate')
 calls={}
@@ -275,4 +281,53 @@ assert(reads==0, 'real handoff must not wait for equipment API')
 real:_dispatchEvent({'keyboard_close'})
 overlay.update()
 assert(real.inputMode==nil and not snapshot['НАГРУДНИК · EXPERIMENTAL'])
+
+-- Link, source slot, selected hand and last positions survive app restarts.
+local saved=assert(disk['/m2os-chestplate.cfg'])
+assert(saved.version==1 and saved.linked==true)
+app.start(ctx)
+assert(services.smart_chestplate.status().hand==saved.hand)
+assert(services.smart_chestplate.status().sourceSlot==saved.sourceSlot)
+assert(services.smart_chestplate.status().linked)
+reads=0
+services.smart_chestplate.show()
+assert(reads==0,'restoring the panel must still render before querying equipment')
+local beforeRestore=#calls
+now=now+100
+app.update(ctx,now)
+assert(reads==2 and services.smart_chestplate.status().online,
+    'saved link must reconnect without clicking Check again')
+local restored=0
+for i=beforeRestore+1,#calls do
+    local call=calls[i]
+    if call.method=='move' then
+        restored=restored+1
+        assert(call.position.x==saved.positions[call.hand].x,'saved pose must be applied to the correct hand')
+    end
+end
+local known=0
+for _ in pairs(saved.positions) do known=known+1 end
+assert(restored==known and restored>0,'all known hand poses must be restored after reconnecting')
+services.mob_scan={latest=function() return {entities={},x=0,y=0,z=0,at=now} end}
+services.smart_chestplate.setAutoAttack(true)
+assert(disk['/m2os-chestplate.cfg'].autoAttack==true)
+app.stop(ctx)
+app.start(ctx)
+assert(services.smart_chestplate.status().autoAttack,'explicitly enabled combat mode must persist')
+now=now+300
+app.update(ctx,now)
+assert(services.smart_chestplate.status().online)
+services.smart_chestplate.setAutoAttack(false)
+assert(disk['/m2os-chestplate.cfg'].autoAttack==false)
+app.stop(ctx)
+
+-- Corrupt nested cache data must not break drawing or reach the native move API.
+disk['/m2os-chestplate.cfg']={version=1,linked=true,positions={"invalid",{x=0/0}},receipts={{}}}
+app.start(ctx)
+beforeRestore=#calls
+services.smart_chestplate.show()
+now=now+100
+app.update(ctx,now)
+assert(services.smart_chestplate.status().open and #calls==beforeRestore)
+app.stop(ctx)
 print('smart chestplate adapter, UI and registration tests: OK')
