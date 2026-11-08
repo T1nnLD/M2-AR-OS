@@ -1,5 +1,6 @@
 local api = require("m2os.api")
 local util = require("m2os.lib.util")
+local RestockPanel = require("m2os.lib.restock_panel")
 
 local app = {
     id = "storage",
@@ -503,8 +504,8 @@ local function updatePanel(ctx)
     end
     setCached(widgets, "footerText", widgets.footer, "setContent",
         hoveredQueued and "ЛКМ:убрать  КОЛЕСО:+/-  CTRL:10 SHIFT:стак"
-            or storageView and "ЛКМ:+1  SHIFT:стак  ENTER:отправить"
-            or "КЛИК: положить стак  I:склад")
+            or storageView and "ЛКМ:+1 SHIFT:стак ENTER:отправить K:авто"
+            or "КЛИК: положить стак I:склад K:авто")
 
     if widgets.queueRows then
         local hidden = math.max(0, #state.transferQueue - #visibleQueue)
@@ -1088,7 +1089,16 @@ local function togglePanel(ctx)
     end
 end
 
+local function showRestock(ctx,item)
+    if state.transferBusy or state.queueSending then ctx.notify("Дождись завершения отправки очереди",ctx.config.theme.amber) return end
+    local mode=ctx.system.getInputMode()
+    if mode and mode~="storage" and mode~="restock" then ctx.notify("Сначала закрой текущее окно",ctx.config.theme.amber) return end
+    if state.panelOpen then togglePanel(ctx) end
+    state.restockPanel:show(item)
+end
+
 function app.start(ctx)
+    state.restockPanel=RestockPanel.new(ctx,function(operation,payload,callback) return send(ctx,operation,payload,callback) end)
     state.serverId = ctx.config.storage.serverId
     state.serverVersion = nil
     state.legacyServerId = nil
@@ -1138,6 +1148,7 @@ function app.start(ctx)
             return send(ctx, "craft", { name = item, count = count or 1 }, callback)
         end,
         inspect = function(target, callback) return send(ctx, "inspect", target, callback) end,
+        restock = function(item) showRestock(ctx,item) end,
         show = function() if not state.panelOpen then togglePanel(ctx) end end,
         hide = function() if state.panelOpen then togglePanel(ctx) end end,
         toggle = function() togglePanel(ctx) end
@@ -1148,6 +1159,8 @@ function app.start(ctx)
         checked = function() return state.panelOpen end,
         run = function() togglePanel(ctx) end
     })
+    ctx.menu.add({id="storage.restock",label="АВТОПОПОЛНЕНИЕ",order=35,
+        run=function() showRestock(ctx) end})
     discover(ctx)
 end
 
@@ -1382,6 +1395,7 @@ local function scheduleSearch(ctx)
 end
 
 function app.onEvent(ctx, event, sender, message, protocol)
+    if state.restockPanel and state.restockPanel:onEvent(event,sender,message,protocol) then return true end
     if state.panelOpen then
         if event == "key" and setModifier(tonumber(sender), true) then
             return true
@@ -1530,6 +1544,12 @@ function app.onEvent(ctx, event, sender, message, protocol)
                 setView(ctx, state.view == "storage" and "inventory" or "storage")
                 return true
             end
+            if keys.k and code==keys.k then
+                local item=state.view=="storage" and selectedItem()
+                    or state.playerSlots[state.selectedPlayerSlot]
+                showRestock(ctx,item)
+                return true
+            end
             if state.view ~= "storage" then return true end
             if code == keys.f then
                 state.searchActive = true
@@ -1591,6 +1611,7 @@ function app.onEvent(ctx, event, sender, message, protocol)
 end
 
 function app.update(ctx, now)
+    if state.restockPanel then state.restockPanel:update(now) end
     if state.panelOpen and state.pointerDirty and state.widgets then
         updatePanel(ctx)
     end
@@ -1618,6 +1639,7 @@ function app.update(ctx, now)
 end
 
 function app.resize(ctx)
+    if state.restockPanel and state.restockPanel.open then state.restockPanel:draw() return end
     if not state.panelOpen then return end
     ctx.ui.clear()
     state.widgets = nil
@@ -1631,6 +1653,7 @@ function app.resize(ctx)
 end
 
 function app.stop(ctx)
+    if state.restockPanel then state.restockPanel:close() end
     if ctx.system.getInputMode() == "storage" then ctx.system.setInputMode(nil) end
     ctx.ui.clear()
     state.panelOpen = false

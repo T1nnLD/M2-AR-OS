@@ -106,6 +106,7 @@ storage.withdraw("minecraft:iron_ingot", 16, callback)
 storage.deposit("minecraft:cobblestone", 64, callback)
 storage.playerInventory(callback) -- data.slots and data.capacity
 storage.depositSlot(12, callback) -- deposits the complete stack in slot 12
+storage.restock({name = "minecraft:bread", displayName = "Хлеб"}) -- opens the quantity panel
 storage.craft("minecraft:precision_mechanism", 1, callback)
 storage.inspect({
     dimension = "minecraft:overworld", x = 10, y = 64, z = -20
@@ -113,6 +114,27 @@ storage.inspect({
 ```
 
 All bridge calls are asynchronous; callbacks receive `(ok, data, error)`.
+
+The bridge also accepts these calls through `storage.request`:
+
+```lua
+storage.request("restock_status", {}, callback) -- {rules, intervalMs}
+storage.request("restock_set", {
+    name = "minecraft:bread", count = 64, enabled = true, label = "Хлеб"
+}, callback)
+storage.request("restock_toggle", {id = rule.id, enabled = false}, callback)
+storage.request("restock_remove", {id = rule.id}, callback)
+```
+
+Each rule contains `id`, `owner` (Memory Card UUID), `ownerName`, `name`, `label`,
+`count`, `enabled`, plus its last observed `current` and `message`. A registry ID
+counts all its variants. Counts must be integers from 1 to 2304; up to 32 rules
+are saved. Creating/updating a rule requires an online card owner; pass an
+existing `id` to guard against changing the owner while editing. Disabling or
+deleting a rule works while its owner is offline. Updates are persisted before
+success is returned and failures retain the previous rules. All calls use the
+bridge's shared-key/trusted-ID checks. The worker makes no queued withdrawal
+requests: it reads the current inventory again before each capped transfer.
 
 ## Context providers
 

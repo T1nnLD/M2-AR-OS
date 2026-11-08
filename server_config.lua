@@ -70,6 +70,12 @@ return {
     transactionTimeout = 45,
     trustedIds = {}, -- empty means every computer with the shared key
 
+    -- Minimum player inventory quantities, configured from the glasses.
+    -- Older configs can omit these settings; the same defaults still apply.
+    restockFile = "/m2os/restock.cfg",
+    restockIntervalMs = 5000,
+    restockStartDelayMs = 10000,
+
     -- Optional detailed context providers. Key format: dimension:x:y:z
     -- Value is the wired peripheral name of an inventory or Block Reader.
     machines = {

@@ -221,6 +221,41 @@ m2ctl craft minecraft:precision_mechanism 4
 Create package route, `outputAddress` and `outputInventory`. Ordinary `stock`,
 `take` and `put` commands remain direct regardless of this option.
 
+## Automatic player inventory restocking
+
+Update both the glasses and storage bridge. Use the existing Inventory Manager
+with the player's bound Memory Card and the same named wired storage network
+as ordinary withdrawals. No additional peripheral is required.
+
+In the storage panel, hover an item and press **K** while the search field is
+inactive. Enter the minimum quantity and click **Сохранить**. The Inventory tab
+also accepts K for its selected item. For example, with a target of 64 bread and
+50 in the player's inventory, the bridge adds only 14. Quantity +/- buttons
+use Ctrl for ten and Shift for 64; clicking the number enables direct typing.
+The radial action **АВТОПОПОЛНЕНИЕ** opens saved rules so they can be edited,
+disabled, enabled or deleted. Esc closes the panel.
+
+Rules count the total quantity by item registry ID, including all variants of
+that ID. They maintain a minimum, never remove surplus and do not craft missing
+stock. Disable a rule before deliberately depositing all of that item, otherwise
+it will be supplied again. Each rule belongs to the UUID on the Manager's Memory
+Card; another card owner is never intentionally supplied by that rule.
+
+The bridge saves rules in `/m2os/restock.cfg` and runs them while the glasses
+panel is closed, even with the HUD stopped. The bridge and its storage chunks
+must remain loaded and the player must be online. On startup, saved rules wait
+ten seconds before checking. Normal checks are spaced by at least five seconds
+per rule and delivery is capped at 64 per cycle. Large networks are checked in
+paced slices. Empty stock, missing storage, offline owners, transfer errors and
+a full inventory are reported in the rule status; failed transfers back off
+for 30 seconds. Live quantities and ownership are checked again before import,
+so an intervening manual delivery reduces the automatic deficit.
+
+Optional bridge settings are `restockFile`, `restockIntervalMs` (minimum 2000)
+and `restockStartDelayMs`. Preserved old configs automatically use the defaults.
+Discovery and counting use basic inventory APIs; this feature does not enable
+full item metadata indexing or Create package requests.
+
 ## Context details
 
 The Context Inspector shows the block data included with a

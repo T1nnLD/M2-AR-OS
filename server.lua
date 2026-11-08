@@ -1,5 +1,6 @@
 local util = require("m2os.lib.util")
 local i18n = require("m2os.lib.i18n")
+local Restock = require("m2os.lib.restock")
 
 local Server = {}
 
@@ -1064,6 +1065,14 @@ local function handleRequest(state, sender, message)
             ignoredLocalInventories = state.ignoredLocalInventories or 0,
             createCrafting = config.enableCreateCrafting == true
         })
+    elseif operation == "restock_status" then
+        response(config,sender,message.id,true,state.restock:status())
+    elseif operation == "restock_set" then
+        local ok,result=state.restock:set(payload,state.manager)
+        response(config,sender,message.id,ok,ok and result or nil,not ok and result or nil)
+    elseif operation == "restock_toggle" or operation == "restock_remove" then
+        local ok,result=state.restock:edit(payload.id,payload.enabled,operation=="restock_remove")
+        response(config,sender,message.id,ok,ok and result or nil,not ok and result or nil)
     elseif operation == "player_inventory" then
         if not state.manager then
             response(config, sender, message.id, false, nil, "Inventory Manager not found")
@@ -1365,8 +1374,10 @@ function Server.run(config)
         itemDetailInflightRecovered = false,
         skippedItemDetails = 0, lastIndexWarning = nil,
         indexedSlots = 0, indexTotal = 0,
-        peripheralRefreshAt = nil
+        peripheralRefreshAt = nil,
+        restock = Restock.new(config)
     }
+    state.onRestock=function(inventory) invalidateChangedItemDetails(state,inventory) end
     refreshPeripherals(state)
     -- Enter the event loop before the first getItemDetail batch. This makes
     -- discovery and the basic stock list available immediately after reboot.
@@ -1378,6 +1389,7 @@ function Server.run(config)
 
     local function requestLoop()
         local timer = os.startTimer(0.25)
+        local nextTickAt=util.epoch()+250
         while not stopping do
             local event = { os.pullEventRaw() }
             if event[1] == "terminate" then
@@ -1391,7 +1403,8 @@ function Server.run(config)
                     state.lastMessage = ("#%d discover"):format(sender)
                     rednet.send(sender, {
                         kind = "hello", key = config.sharedKey,
-                        name = "M2OS Create Bridge", version = 10,
+                        name = "M2OS Create Bridge", version = 12,
+                        restock = true,
                         inventories = #state.inventories,
                         detectedInventories = state.discoveredInventoryCount,
                         incompatibleInventories = #state.incompatibleInventories,
@@ -1402,7 +1415,10 @@ function Server.run(config)
                     handleRequest(state, sender, message)
                 end
                 printStatus(state)
-            elseif event[1] == "timer" and event[2] == timer then
+            elseif event[1] == "timer" and (event[2] == timer or util.epoch()>=nextTickAt) then
+                -- Native calls can consume our own timer while awaiting their
+                -- result. The index worker's timers also recover that deadline.
+                if os.cancelTimer then os.cancelTimer(timer) end
                 local now = util.epoch()
                 if state.peripheralRefreshAt
                         and now >= state.peripheralRefreshAt then
@@ -1414,8 +1430,10 @@ function Server.run(config)
                     end
                 end
                 pollTransactions(state, now)
+                state.restock:tick(now,state)
                 saveItemDetailCache(state, false)
                 printStatus(state)
+                nextTickAt=util.epoch()+250
                 timer = os.startTimer(0.25)
             elseif event[1] == "peripheral" or event[1] == "peripheral_detach" then
                 -- Stop the current snapshot immediately, but delay the costly
