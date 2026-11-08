@@ -65,20 +65,6 @@ with `ctx.system.setInputMode(nil)` when the interactive window closes.
 - `resize(ctx, width, height)` runs after the glasses GUI size changes.
 - `stop(ctx)` runs before disable/shutdown.
 
-The frame loop checks its next deadline after input callbacks as well as timer
-events. A native peripheral call may consume the pending frame timer while
-waiting for `task_complete`; returning from that call still resumes app updates
-and rearms the timer. Slow calls delay a frame but cannot permanently disable
-future frames by swallowing that one event.
-
-`keyboard_open` and `keyboard_close` are broadcast to every enabled app, even
-if another app returns `true`. Mouse and keyboard input first goes to the app
-whose ID matches the current input mode, then to other handlers by priority
-until one returns `true`. A fresh `keyboard_open` closes any leftover modal
-session before opening the radial menu; `keyboard_close` releases input and
-cancels radial selection. Execute a radial item with a click, not by closing
-the Keyboard Screen.
-
 Three errors in a row disable a non-required app. Every overlay object created
 through `ctx.ui` belongs to the app and is removed automatically when the app is
 disabled. Apps must never call `overlay.clear()`.
@@ -106,30 +92,6 @@ disabled. Apps must never call `overlay.clear()`.
 
 Services are normal Lua tables and calls are local. They disappear automatically
 when their owner app stops.
-
-## Experimental Smart Chestplate service
-
-```lua
-local chest = ctx.services.get("smart_chestplate")
-chest.show()    -- Opens the interactive panel, requires Keyboard module.
-chest.hide()    -- Releases this app's input mode and removes its UI.
-chest.status()  -- { open, online, hand = 1..5, sourceSlot = 1..36, linked, autoAttack }
-chest.setAutoAttack(true) -- Opt-in nearest-mob attacks; false cancels pending work.
-```
-
-Loading this service performs no native equipment operations. A saved connection
-is verified on a later update, then known hand positions and the saved autoattack
-switch are restored. Settings are stored in `/m2os-chestplate.cfg` (override
-`chestplate.stateFile`; `false` disables saving). The app handles
-manual actions through `m2os.lib.smart_chestplate`, which validates hand indexes,
-transfer slots and coordinates and catches native Lua/API errors. Automatic
-combat requires explicitly enabling its switch (which is persisted). There is
-no automatic mining. Combat continues outside the panel, shares fresh scans
-through the tracker's `mob_scan.latest()` service, and falls back to its own
-basic Environment Detector scans when the tracker is disabled. A snapshot holds
-`{ entities, x, y, z, at }`, where x/y/z are the world eye origin and at is UTC
-epoch milliseconds. `smartChestList` in AP 0.8.2a is treated as a
-player-inventory query, not a reliable five-hand inventory query.
 
 ## Storage service
 

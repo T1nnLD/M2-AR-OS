@@ -255,11 +255,6 @@ end
 
 function Kernel:_loadApps()
     for _, moduleName in ipairs(self.config.modules) do require(moduleName) end
-    -- config.lua is preserved on updates. Expose the newly installed built-in
-    -- app on existing glasses without rewriting the user's module list.
-    if fs.exists("/m2os/apps/smart_chestplate.lua") then
-        require("m2os.apps.smart_chestplate")
-    end
     for _, definition in pairs(api.getApps()) do self:register(definition) end
     table.sort(self.appOrder, function(a, b)
         return (a.definition.priority or 100) < (b.definition.priority or 100)
@@ -286,41 +281,6 @@ function Kernel:_shutdown()
     pcall(self.overlay.update)
 end
 
-function Kernel:_dispatchEvent(event)
-    local name = event[1]
-    if name == "keyboard_open" and self.inputMode ~= nil then
-        -- A fresh KeyboardScreen is a new input session. Recover even when
-        -- the previous close event was missed or an app retained its mode.
-        for _, owner in ipairs(self.appOrder) do
-            self:_invoke(owner, "onEvent", "keyboard_close")
-        end
-        self.inputMode = nil
-    end
-
-    local lifecycle = name == "keyboard_open" or name == "keyboard_close"
-    local inputEvent = name == "key" or name == "key_up" or name == "char" or name == "paste"
-        or name == "player_mouse_move" or name == "player_mouse_click"
-        or name == "player_mouse_up" or name == "player_mouse_scroll"
-    local inputOwner
-    if inputEvent and self.inputMode then
-        for _, owner in ipairs(self.appOrder) do
-            if owner.definition.id == self.inputMode and owner.enabled then
-                inputOwner = owner
-                if self:_invoke(owner, "onEvent", table.unpack(event)) then return end
-                break
-            end
-        end
-    end
-    for _, owner in ipairs(self.appOrder) do
-        local consumed
-        if owner ~= inputOwner then consumed = self:_invoke(owner, "onEvent", table.unpack(event)) end
-        -- Screen lifecycle belongs to all apps, even when one modal consumes
-        -- the event. Mouse/key events still go only to their first handler.
-        if consumed and not lifecycle then break end
-    end
-    if name == "keyboard_close" then self.inputMode = nil end
-end
-
 function Kernel:loop()
     self.overlay.setAutoUpdate(false)
     self:_loadApps()
@@ -329,22 +289,11 @@ function Kernel:loop()
 
     local lastTick = util.epoch()
     local timer = os.startTimer(0.05)
-    local nextTickAt = lastTick + 50
     while self.running do
         local event = { os.pullEventRaw() }
-        local frameTimer = event[1] == "timer" and event[2] == timer
         if event[1] == "terminate" then
             self.running = false
-        elseif not frameTimer then
-            self:_dispatchEvent(event)
-        end
-
-        -- A yielding AP method inside an input callback waits for its own
-        -- task_complete event. The frame timer can fire during that wait and
-        -- never reach this loop. Recover by the deadline after every callback,
-        -- otherwise one hand action can freeze all app updates permanently.
-        if self.running and (frameTimer or util.epoch() >= nextTickAt) then
-            if os.cancelTimer then os.cancelTimer(timer) end
+        elseif event[1] == "timer" and event[2] == timer then
             local now = util.epoch()
             local oldWidth, oldHeight = self.width, self.height
             self:_measure()
@@ -358,10 +307,11 @@ function Kernel:loop()
             end
             lastTick = now
             self.overlay.update()
-            -- Schedule from completion rather than issuing catch-up frames
-            -- in a burst after a slow native operation.
-            nextTickAt = util.epoch() + 50
             timer = os.startTimer(0.05)
+        else
+            for _, owner in ipairs(self.appOrder) do
+                if self:_invoke(owner, "onEvent", table.unpack(event)) then break end
+            end
         end
     end
     self:_shutdown()
