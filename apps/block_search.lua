@@ -5,14 +5,18 @@ local app={id="block_search",name="Поиск блоков",priority=25,userTogg
     persistent=false,defaultEnabled=true}
 local state={}
 local render
+local PANEL_SETTLE_MS=180
+local MAX_SETTLE_MS=500
 
 local function clearGui(ctx)
     for _,object in ipairs(state.gui or {}) do ctx.ui.remove(object) end
     state.gui={}
+    state.widgets=nil state.hits=nil state.cursor=nil
 end
 
 local function close(ctx)
     state.open=false
+    state.drawAt=nil state.resizeStartedAt=nil
     clearGui(ctx)
     if ctx.system.getInputMode()==app.id then ctx.system.setInputMode(nil) end
 end
@@ -28,7 +32,32 @@ local function startSearch(ctx,query,radius)
     return true,result
 end
 
+local function updateContents(ctx)
+    local widgets=state.widgets
+    if not widgets then return end
+    local theme=ctx.config.theme
+    local function set(key,object,method,value)
+        if widgets[key]~=value then object[method](value) widgets[key]=value end
+    end
+    set("queryValue",widgets.query,"setContent",state.query~="" and util.utf8Sub(state.query,-51) or "minecraft:diamond_ore")
+    set("queryColor",widgets.query,"setColor",state.query~="" and theme.white or theme.gray)
+    local actual=state.search.scanRange
+    set("radiusValue",widgets.radius,"setContent","Радиус: "..state.radius..(actual and (" · фактически: "..actual) or ""))
+    set("statusValue",widgets.status,"setContent",util.short(state.message or state.search.message,53))
+    set("statusColor",widgets.status,"setColor",(state.bad or state.search.bad) and theme.red or theme.white)
+    local nearest=state.search.nearest
+    local detail=nearest and ("Ближайший: %d / %d / %d · %.1f м"):format(
+        nearest.blockX,nearest.blockY,nearest.blockZ,math.sqrt(nearest.distance))
+        or "Сканер: в очках · подсветка видна сквозь блоки"
+    set("detailValue",widgets.detail,"setContent",detail)
+end
+
 local function draw(ctx)
+    local pointerX,pointerY
+    if state.scale and state.px and state.py then
+        pointerX=(state.px-state.x)/state.scale
+        pointerY=(state.py-state.y)/state.scale
+    end
     clearGui(ctx)
     if not state.open then return end
     -- GUI and world markers share an app owner but have separate lifetimes.
@@ -45,10 +74,12 @@ local function draw(ctx)
     local s=math.max(0.1,math.min(1,(width-12)/360,(height-12)/220))
     local x,y=(width-360*s)/2,(height-220*s)/2
     state.x,state.y,state.scale=x,y,s
+    if pointerX then state.px=x+pointerX*s state.py=y+pointerY*s end
     local theme=ctx.config.theme
     local function text(px,py,value,color,size)
-        ui.text(x+px*s,y+py*s,value,color or theme.white,(size or 0.78)*s,76,false)
+        return ui.text(x+px*s,y+py*s,value,color or theme.white,(size or 0.78)*s,76,false)
     end
+    state.widgets={}
     state.hits={}
     local function button(px,py,w,h,label,run)
         ui.rectangle(x+px*s,y+py*s,w*s,h*s,0x293044,1,73)
@@ -60,30 +91,29 @@ local function draw(ctx)
     text(12,10,"ПОИСК БЛОКОВ",theme.white,1)
     text(12,30,"ID блока или #тег:",theme.gray)
     ui.rectangle(x+12*s,y+47*s,336*s,24*s,0x293044,1,73)
-    text(18,54,state.query~="" and util.utf8Sub(state.query,-51) or "minecraft:diamond_ore",state.query~="" and theme.white or theme.gray)
+    state.widgets.query=text(18,54,"")
     text(12,78,"Примеры: create:item_vault · #c:ores/diamond",theme.gray,0.70)
-    local actual=state.search.scanRange
-    text(12,101,"Радиус: "..state.radius..(actual and (" · фактически: "..actual) or ""),theme.gray)
+    state.widgets.radius=text(12,101,"",theme.gray)
     button(264,94,38,21,"-",function() state.radius=math.max(1,state.radius-1) end)
     button(309,94,39,21,"+",function() state.radius=math.min(16,state.radius+1) end)
     button(12,124,162,23,"Искать / обновить",function() startSearch(ctx,state.query,state.radius) end)
     button(184,124,164,23,"Остановить",function() state.search:stop() state.message=nil state.bad=false end)
-    text(12,157,util.short(state.message or state.search.message,53),
-        (state.bad or state.search.bad) and theme.red or theme.white,0.74)
-    local nearest=state.search.nearest
-    local detail=nearest and ("Ближайший: %d / %d / %d · %.1f м"):format(
-        nearest.blockX,nearest.blockY,nearest.blockZ,math.sqrt(nearest.distance))
-        or "Сканер: в очках · подсветка видна сквозь блоки"
-    text(12,177,detail,theme.gray,0.70)
+    state.widgets.status=text(12,157,"",theme.white,0.74)
+    state.widgets.detail=text(12,177,"",theme.gray,0.70)
     text(12,201,"Enter: искать · Delete: очистить · Esc: в игру",theme.gray,0.68)
     state.px=util.clamp(state.px or width/2,x,x+360*s)
     state.py=util.clamp(state.py or height/2,y,y+220*s)
     state.cursor=util.createTopCursor(ui,state.px,state.py,90,theme)
+    updateContents(ctx)
 end
 
-render=function(ctx)
+render=function(ctx,flush)
     if not state.open then return end
-    local ok,err=pcall(function() draw(ctx) ctx.system.flushOverlay() end)
+    local ok,err=pcall(function()
+        if state.widgets then updateContents(ctx)
+        elseif not state.drawAt then draw(ctx) end
+        if flush~=false then ctx.system.flushOverlay() end
+    end)
     if not ok then close(ctx) ctx.notify("Поиск: ошибка интерфейса: "..tostring(err),ctx.config.theme.red) end
 end
 
@@ -95,8 +125,9 @@ local function show(ctx)
     if not keyboard then ctx.notify("Для ввода нужен модуль Keyboard",ctx.config.theme.amber) return end
     if type(keyboard.setCaptureMouse)=="function" then pcall(keyboard.setCaptureMouse,true) end
     state.open=true state.px=nil state.py=nil
+    state.resizeStartedAt=util.epoch()
+    state.drawAt=state.resizeStartedAt+PANEL_SETTLE_MS
     ctx.system.setInputMode(app.id)
-    render(ctx)
 end
 
 function app.start(ctx)
@@ -150,7 +181,8 @@ function app.onEvent(ctx,event,...)
             state.message=nil render(ctx)
         end
         return true
-    elseif event=="player_mouse_move" and state.scale then
+    elseif event=="player_mouse_move" then
+        if not state.widgets then return true end
         state.px=util.clamp(state.px+(values[#values-1] or 0),state.x,state.x+360*state.scale)
         state.py=util.clamp(state.py+(values[#values] or 0),state.y,state.y+220*state.scale)
         util.moveTopCursor(state.cursor,state.px,state.py,90)
@@ -168,16 +200,23 @@ function app.onEvent(ctx,event,...)
 end
 
 function app.update(ctx,now)
-    local function signature()
-        return (state.search.message or "")..":"..tostring(state.search.shown)..":"
-            ..tostring(state.search.nearest and state.search.nearest.key)..":"..tostring(state.search.scanRange)
+    if state.open and not state.widgets and state.drawAt and now<state.drawAt then return end
+    if state.open and state.drawAt and now>=state.drawAt then
+        state.drawAt=nil state.resizeStartedAt=nil
+        -- Keep the old layout clickable until the settled replacement is
+        -- ready, then replace it in one batch and publish before native scans.
+        clearGui(ctx)
+        render(ctx)
     end
-    local old=signature()
     state.search:update(now)
-    local current=signature()
-    if state.open and old~=current then render(ctx) end
+    if state.open then render(ctx,false) end
 end
-function app.resize(ctx) render(ctx) end
+function app.resize(ctx)
+    if not state.open then return end
+    local now=util.epoch()
+    state.resizeStartedAt=state.resizeStartedAt or now
+    state.drawAt=math.min(now+PANEL_SETTLE_MS,state.resizeStartedAt+MAX_SETTLE_MS)
+end
 function app.stop(ctx) close(ctx) state.search:stop() end
 
 api.registerApp(app)
