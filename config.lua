@@ -46,8 +46,8 @@ return {
     },
 
     blockSearch = {
-        range = 8, -- Requested radius, capped by the server's free radius.
-        intervalMs = 5000,
+        -- Radius and interval come from tracker.range / tracker.intervalMs.
+        -- The Geo Scanner's own server limits still apply.
         maxMarkers = 24, -- Nearest matches; maximum 32 to bound overlay load.
         stateFile = "/m2os/block_search.cfg"
     },

@@ -11,6 +11,7 @@ os.epoch=function() return now end
 keys={enter=1,escape=2,backspace=3,delete=4}
 local files,objects,services,actions={},{},{},{}
 local width,height,changes=500,350,0
+local eyeX=0.25
 util.readTable=function(path,fallback) return files[path] or fallback end
 util.writeTable=function(path,value) files[path]=util.copy(value) return true end
 local function object(properties)
@@ -24,14 +25,14 @@ local function object(properties)
     objects[#objects+1]=object
     return object
 end
-local ctx={config={theme={white=1,gray=2,purple=3,background=4,red=5,amber=6,yellow=7}},
+local ctx={config={theme={white=1,gray=2,purple=3,background=4,red=5,amber=6,yellow=7},tracker={range=8,intervalMs=5000}},
     ui={remove=function(object) assert(not object.removed) object.removed=true end,
         raw=function(_,properties) return object(properties) end,
         rectangle=function() return object() end,textureRect=function() return object() end,
         text=function(x,y,content) return object({gui=true,x=x,y=y,content=content}) end},
     notify=function() end,
     system={getSize=function() return width,height end,getInputMode=function() return mode end,
-        setInputMode=function(value) mode=value end,getEyePosition=function() return 0.25,65.62,0.75 end,
+        setInputMode=function(value) mode=value end,getEyePosition=function() return eyeX,65.62,0.75 end,
         getModule=function() return {setCaptureMouse=function() end} end,flushOverlay=function() end},
     services={provide=function(name,value) services[name]=value end},menu={add=function(action) actions[action.id]=action end}}
 local blocks={{name='minecraft:diamond_ore',x=1.25,y=-1.12,z=-0.25}}
@@ -60,6 +61,7 @@ app.onEvent(ctx,'char','x') -- editing/redrawing the GUI must preserve world obj
 for _,object in ipairs(world) do assert(not object.removed) end
 assert(#objects==created,'typing must edit existing text instead of rebuilding the panel and cursor')
 blocks[1].x=1.15 -- same block center after grid snapping, new measured distance.
+eyeX=0.35
 now=5200 app.update(ctx,now)
 assert(calls==2 and #objects==created,'refreshing results must reuse the panel, cursor and unchanged markers')
 for _,object in ipairs(gui) do assert(not object.removed) end
@@ -69,20 +71,29 @@ assert(changes==before,'idle frames must not send redundant text/color updates')
 
 -- Resize bursts retain the previous clickable layout, then rebuild once
 -- using the latest dimensions. Ordinary result updates never re-center it.
-local plus
-for _,object in ipairs(gui) do if object.properties.content=='+' then plus=object break end end
-app.onEvent(ctx,'player_mouse_move',plus.properties.x+1-250,plus.properties.y+1-175)
+local searchButton
+for _,object in ipairs(gui) do
+    assert(object.properties.content~='+' and object.properties.content~='-','remove manual distance controls')
+    if object.properties.content=='Искать / обновить' then searchButton=object end
+end
+app.onEvent(ctx,'player_mouse_move',searchButton.properties.x+1-250,searchButton.properties.y+1-175)
 width,height=800,500
 now=5300 app.resize(ctx)
 now=5400 app.resize(ctx)
-app.onEvent(ctx,'player_mouse_click',1)
-assert(services.block_search.status().radius==9,'old buttons must remain clickable while a resize is pending')
+assert(services.block_search.status().radius==8,'radius comes from shared tracker settings')
 now=5500 app.update(ctx,now)
 assert(#objects==created and not gui[1].removed)
 now=5580 app.update(ctx,now)
 assert(gui[1].removed and #objects>created,'build one replacement after the resize burst settles')
-app.onEvent(ctx,'player_mouse_click',1)
-assert(services.block_search.status().radius==10,'cursor must retain its position relative to the resized panel')
+local newButton,cursor
+for _,object in ipairs(objects) do
+    if not object.removed then
+        if object.properties.content=='Искать / обновить' then newButton=object end
+        if object.properties.fontSize==0.43 then cursor=object end
+    end
+end
+assert(math.abs(cursor.properties.x-newButton.properties.x-1)<0.00001,
+    'cursor must retain its position relative to the resized panel')
 for _,object in ipairs(world) do assert(not object.removed,'resizing must leave world markers intact') end
 local bounded=objects[#objects]
 for i=1,12 do
@@ -107,6 +118,7 @@ actions['block_search.panel'].run()
 assert(not services.block_search.status().active,'a restart restores settings without restarting native scanning')
 app.onEvent(ctx,'key',keys.enter)
 assert(services.block_search.status().query=='minecraft:diamond_ore','restore the last valid ID from disk')
+assert(files['/m2os/block_search.cfg'].radius==nil,'saved manual distances must no longer control scanning')
 app.stop(ctx)
 
 -- Existing preserved configs must get the app without editing their modules.

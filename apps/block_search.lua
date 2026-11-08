@@ -21,12 +21,12 @@ local function close(ctx)
     if ctx.system.getInputMode()==app.id then ctx.system.setInputMode(nil) end
 end
 
-local function startSearch(ctx,query,radius)
-    local ok,result=state.search:start(query,radius)
+local function startSearch(ctx,query)
+    local ok,result=state.search:start(query)
     if not ok then state.message=result state.bad=true return false,result end
-    state.query=result state.radius=state.search.radius state.message=nil state.bad=false
+    state.query=result state.message=nil state.bad=false
     if state.path then
-        local written,saved,err=pcall(util.writeTable,state.path,{version=1,query=result,radius=state.radius})
+        local written,saved,err=pcall(util.writeTable,state.path,{version=1,query=result})
         if not written or not saved then ctx.notify("Поиск запущен; настройки не сохранены: "..tostring(written and err or saved),ctx.config.theme.amber) end
     end
     return true,result
@@ -41,8 +41,6 @@ local function updateContents(ctx)
     end
     set("queryValue",widgets.query,"setContent",state.query~="" and util.utf8Sub(state.query,-51) or "minecraft:diamond_ore")
     set("queryColor",widgets.query,"setColor",state.query~="" and theme.white or theme.gray)
-    local actual=state.search.scanRange
-    set("radiusValue",widgets.radius,"setContent","Радиус: "..state.radius..(actual and (" · фактически: "..actual) or ""))
     set("statusValue",widgets.status,"setContent",util.short(state.message or state.search.message,53))
     set("statusColor",widgets.status,"setColor",(state.bad or state.search.bad) and theme.red or theme.white)
     local nearest=state.search.nearest
@@ -93,10 +91,8 @@ local function draw(ctx)
     ui.rectangle(x+12*s,y+47*s,336*s,24*s,0x293044,1,73)
     state.widgets.query=text(18,54,"")
     text(12,78,"Примеры: create:item_vault · #c:ores/diamond",theme.gray,0.70)
-    state.widgets.radius=text(12,101,"",theme.gray)
-    button(264,94,38,21,"-",function() state.radius=math.max(1,state.radius-1) end)
-    button(309,94,39,21,"+",function() state.radius=math.min(16,state.radius+1) end)
-    button(12,124,162,23,"Искать / обновить",function() startSearch(ctx,state.query,state.radius) end)
+    text(12,101,"Непрерывный поиск при движении",theme.gray)
+    button(12,124,162,23,"Искать / обновить",function() startSearch(ctx,state.query) end)
     button(184,124,164,23,"Остановить",function() state.search:stop() state.message=nil state.bad=false end)
     state.widgets.status=text(12,157,"",theme.white,0.74)
     state.widgets.detail=text(12,177,"",theme.gray,0.70)
@@ -139,19 +135,18 @@ function app.start(ctx)
     saved=ok and type(saved)=="table" and saved.version==1 and saved or {}
     local query=type(saved.query)=="string" and saved.query or ""
     state={open=false,gui={},query=query,path=path,
-        radius=math.max(1,math.min(16,math.floor(tonumber(saved.radius or options.range) or 8))),
         search=Search.new(ctx)}
     ctx.menu.add({id="block_search.panel",label="ПОИСК БЛОКОВ",order=50,run=function() show(ctx) end})
     ctx.services.provide("block_search",{
         show=function() show(ctx) end,hide=function() close(ctx) end,
-        start=function(query,radius)
-            local success,result=startSearch(ctx,query,radius or state.radius)
+        start=function(query)
+            local success,result=startSearch(ctx,query)
             render(ctx) return success,result
         end,
         stop=function() state.search:stop() state.message=nil state.bad=false render(ctx) end,
         status=function()
-            return {active=state.search.active,query=state.search.query,radius=state.radius,
-                actualRadius=state.search.scanRange,total=state.search.total,shown=state.search.shown,
+            return {active=state.search.active,query=state.search.query,radius=state.search.radius,
+                actualRadius=state.search.scanRange,intervalMs=state.search.interval,total=state.search.total,shown=state.search.shown,
                 message=state.search.message,nearest=util.copy(state.search.nearest)}
         end
     })
@@ -170,7 +165,7 @@ function app.onEvent(ctx,event,...)
         local held=false
         for _,value in ipairs({...}) do if value==true then held=true end end
         if code==keys.escape then close(ctx)
-        elseif code==keys.enter and not held then startSearch(ctx,state.query,state.radius) render(ctx)
+        elseif code==keys.enter and not held then startSearch(ctx,state.query) render(ctx)
         elseif code==keys.backspace then state.query=util.utf8Backspace(state.query) state.message=nil render(ctx)
         elseif code==keys.delete then state.query="" state.message=nil render(ctx) end
         return true

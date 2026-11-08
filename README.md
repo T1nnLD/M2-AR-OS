@@ -268,26 +268,33 @@ registry ID and press Enter or **Искать / обновить**:
 - `#c:ores/diamond` to match a block tag, including multiple ore variants
 
 Delete clears the field; Backspace edits it and paste is supported. The field
-expects registry IDs/tags, not localized item names. Radius +/- controls request
-1–16 blocks. The app reads the Geo Scanner's server configuration and caps the
-request to its free radius and maximum radius, respecting its cooldown. Glasses
-cannot pay for a scan beyond their free radius. The panel displays the actual
-radius, unique matches, displayed matches, and nearest block coordinates.
+expects registry IDs/tags, not localized item names. There is no manual distance
+field. The requested radius and interval come from `tracker.range` and
+`tracker.intervalMs`, shared with the Environment Detector's Threat Boxes.
+The app reads the Geo Scanner's own server configuration and caps the request
+to its free radius and maximum radius, respecting its cooldown (plus 50ms).
+The two peripherals can have different server limits. Glasses cannot pay for a
+scan beyond their free radius. If a scanner does not expose its free limit, the
+initial request is bounded to eight blocks and refused radii are reduced.
+The panel displays unique matches, displayed matches and nearest coordinates.
 
 Matches get gold wireframe boxes through walls. Closing the panel with Esc
 returns to play and leaves scanning/highlighting active. Open the panel and
-press **Остановить** to clear it. Periodic scans remove markers for mined or
-changed blocks. The default interval is five seconds; the nearest 24 matches
-are drawn to bound overlay load. With AP 0.8.2a the scan offsets point from the
-wearer's eye to block centers. Results are snapped to the block grid; a scan
-made while the player moves too far during the native call is discarded until
-a more accurate scan is possible. Unexpected native errors stop automatic
-scanning; cooldown errors wait for the next attempt.
+press **Остановить** to clear it. The search continuously follows the wearer
+while walking, finds new nearby blocks and removes mined/changed matches. Its
+cadence follows the shared tracker settings and the Geo Scanner's cooldown.
+The nearest 24 matches are drawn to bound overlay load. With AP 0.8.2a the scan
+offsets point from the wearer's eye to block centers. The engine uses that grid
+and before/after eye samples to recover the live scan origin during movement.
+If a teleport or unusually fast movement makes the origin ambiguous, valid old
+markers remain until a new scan or their expiry, while automatic search stays
+active. Unexpected native errors stop scanning; cooldown errors wait.
 
-Settings are under `blockSearch` in the glasses config (`range`, `intervalMs`,
-`maxMarkers`, `stateFile`); preserved older configs use defaults automatically.
-The last valid query and requested radius are saved in `/m2os/block_search.cfg`.
-A HUD restart restores those fields with scanning off until explicitly started.
+`blockSearch` configures only `maxMarkers` and `stateFile`. Its old separate
+`range`/`intervalMs` settings and saved manual radius are ignored. Preserved old
+configs automatically use their existing tracker settings. The last valid query
+is saved in `/m2os/block_search.cfg`; a HUD restart restores it with scanning off
+until explicitly started.
 This app loads on existing configs without editing their `modules` list.
 
 ## Context details

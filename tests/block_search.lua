@@ -21,7 +21,7 @@ local function fixture(config)
     local scanner={getConfiguration=function() return config or {operations={scan_blocks={maxFreeRadius=4,defaultCooldown=8000}}} end}
     scanner.scanBlocks=function(radius) calls[#calls+1]=radius return blocks end
     peripheral={find=function(kind) if kind=='geo_scanner' then return scanner,'back' end end}
-    local ctx={config={theme={yellow=0xFFD54A},blockSearch={maxMarkers=2}},
+    local ctx={config={theme={yellow=0xFFD54A},tracker={range=16,intervalMs=100},blockSearch={maxMarkers=2}},
         system={getEyePosition=function() return table.unpack(position) end},
         ui={raw=function(kind,properties)
             assert(kind=='Box' and properties.depthTest==false)
@@ -41,7 +41,7 @@ assert(search:start('diamond_ore',16))
 search:update(0)
 assert(#calls==0,'start must schedule native calls for a later update')
 now=100 search:update(now)
-assert(calls[1]==4 and search.interval==8100,'respect the free radius and server cooldown')
+assert(calls[1]==4 and search.interval==8050,'respect the free radius and server cooldown like the entity tracker')
 assert(search.total==2 and search.shown==2 and #objects==24)
 assert(search.nearest.blockX==9 and search.nearest.blockY==64 and search.nearest.blockZ==-21)
 local edge=search.markers['9:64:-21'][1].properties
@@ -63,7 +63,7 @@ assert(search:start('diamond_ore',8)) now=100 search:update(now)
 assert(search.nearest.blockX==-3,'negative coordinates must floor to the block, never truncate towards zero')
 
 search,calls,objects,removed,position,blocks,scanner,ctx=fixture({operations={scan_blocks={maxFreeRadius=8}}})
-for i=1,4 do blocks[i]={name='minecraft:stone',x=i-0.25,y=-0.12,z=0.25} end
+for i=1,4 do blocks[i]={name='minecraft:stone',x=i+0.25,y=-0.12,z=0.25} end
 assert(search:start('stone',8)) now=100 search:update(now)
 assert(search.total==4 and search.shown==2 and #objects==24,'bound the number of overlay objects')
 search:stop()
@@ -101,4 +101,25 @@ search:start('stone',8)
 for _,time in ipairs({100,5100,10100,15100}) do now=time search:update(now) end
 assert(calls[1]==8 and calls[2]==4 and calls[3]==2 and calls[4]==1 and not search.active,
     'older configurations must reduce refused radii and eventually stop')
+
+-- Reconcile a live scan origin while walking; a >0.5-block change during a
+-- native call must not require the player to stop or offset the boxes.
+search,calls,objects,removed,position,blocks,scanner,ctx=fixture({operations={scan_blocks={maxFreeRadius=12,defaultCooldown=150}}})
+ctx.config.tracker={range=32,intervalMs=250}
+ctx.config.blockSearch.range=1 ctx.config.blockSearch.intervalMs=99999
+scanner.scanBlocks=function(radius)
+    calls[#calls+1]=radius
+    local centerX=position[1]+0.6
+    local bx=math.floor(centerX)+2
+    local result={{name='minecraft:stone',x=bx+0.5-centerX,y=64.5-position[2],z=-20.5-position[3]}}
+    position[1]=position[1]+0.7
+    return result
+end
+search:start('stone',1) -- obsolete explicit distances must not override shared settings.
+now=100 search:update(now)
+assert(calls[1]==12 and search.radius==32 and search.interval==250)
+assert(search.active and search.total==1 and search.nearest.blockX==12)
+now=349 search:update(now) assert(#calls==1)
+now=350 search:update(now)
+assert(#calls==2 and search.active and search.nearest.blockX==13,'continue finding new blocks while the wearer walks')
 print('geo block search filtering, world alignment, caps, cooldown and error tests: OK')

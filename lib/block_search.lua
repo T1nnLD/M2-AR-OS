@@ -31,8 +31,10 @@ end
 
 function Search.new(ctx)
     local config=ctx.config.blockSearch or {}
-    return setmetatable({ctx=ctx,active=false,query="",radius=8,markers={},total=0,shown=0,
-        interval=math.max(2000,tonumber(config.intervalMs) or 5000),
+    local tracker=ctx.config.tracker or {}
+    return setmetatable({ctx=ctx,active=false,query="",markers={},total=0,shown=0,
+        radius=math.max(1,math.floor(finite(tracker.range) or 16)),
+        interval=math.max(100,finite(tracker.intervalMs) or 2100),
         maxMarkers=math.max(1,math.min(32,math.floor(tonumber(config.maxMarkers) or 24))),
         message="Введи ID и нажми «Искать»",nextAt=0},Search)
 end
@@ -47,12 +49,14 @@ function Search:clear()
     self.expiresAt=nil
 end
 
-function Search:start(query,radius)
+function Search:start(query)
     local normalized,err=Search.normalize(query)
     if not normalized then return false,err end
-    radius=finite(radius) or 8
+    local tracker=self.ctx.config.tracker or {}
     self:clear()
-    self.query,self.radius=normalized,math.max(1,math.min(16,math.floor(radius)))
+    self.query=normalized
+    self.radius=math.max(1,math.floor(finite(tracker.range) or 16))
+    self.interval=math.max(100,finite(tracker.intervalMs) or 2100)
     self.scanRange=nil self.scanner=nil self.scannerName=nil
     self.active=true self.bad=false self.message="Поиск запущен…"
     self.nextAt=util.epoch()+100
@@ -72,6 +76,7 @@ function Search:configure()
     if not self.scanner then self:stop("Geo Scanner в очках не найден",true) return false end
     if type(self.scanner.scanBlocks)~="function" then self:stop("Нужен Geo Scanner с API scanBlocks (AP 0.8)",true) return false end
     self.scanRange=self.radius
+    local freeKnown=false
     if type(self.scanner.getConfiguration)=="function" then
         local ok,config=pcall(self.scanner.getConfiguration)
         local operations=ok and type(config)=="table" and config.operations
@@ -80,12 +85,15 @@ function Search:configure()
                 local free=finite(operation.maxFreeRadius)
                 local maximum=finite(operation.maxCostRadius)
                 if free and free<1 then self:stop("На сервере отключён бесплатный радиус Geo Scanner",true) return false end
-                if free then self.scanRange=math.min(self.scanRange,math.floor(free)) end
+                if free then self.scanRange=math.min(self.scanRange,math.floor(free)) freeKnown=true end
                 if maximum then self.scanRange=math.min(self.scanRange,math.floor(maximum)) end
-                self.interval=math.max(self.interval,(finite(operation.defaultCooldown) or 0)+100)
+                self.interval=math.max(self.interval,(finite(operation.defaultCooldown) or 0)+50)
             end
         end
     end
+    -- Older scanners without limits must not receive the entity tracker's
+    -- potentially huge radius before their block-scan capability is known.
+    if not freeKnown then self.scanRange=math.min(self.scanRange,8) end
     if self.scanRange<1 then self:stop("Сервер не разрешает сканирование",true) return false end
     return true
 end
@@ -107,6 +115,16 @@ function Search:marker(center)
         end
     end
     return parts
+end
+
+local function scanOrigin(before,after,relative)
+    -- Every block offset points to n+0.5, so it reveals the scan origin's
+    -- fractional coordinate. Recover its integer part between the eye samples
+    -- rather than anchoring the result to a stale pre-call player position.
+    local offset=0.5-relative
+    local lower=math.ceil(math.min(before,after)-0.05-offset)
+    local upper=math.floor(math.max(before,after)+0.05-offset)
+    if lower==upper then return lower+offset end
 end
 
 function Search:update(now)
@@ -138,10 +156,21 @@ function Search:update(now)
     end
     local ax,ay,az=self.ctx.system.getEyePosition()
     ax,ay,az=finite(ax),finite(ay),finite(az)
-    if ax and ay and az and (ax-x)^2+(ay-y)^2+(az-z)^2>0.25 then
-        self:clear()
-        self.message="Движение слишком быстрое — остановись для точного скана"
-        return
+    for _,block in pairs(blocks) do
+        if type(block)=="table" then
+            local dx,dy,dz=finite(block.x),finite(block.y),finite(block.z)
+            if dx and dy and dz then
+                local sx=scanOrigin(x,ax or x,dx)
+                local sy=scanOrigin(y,ay or y,dy)
+                local sz=scanOrigin(z,az or z,dz)
+                if not sx or not sy or not sz then
+                    self.message="Поиск продолжается; уточняю новые координаты"
+                    return
+                end
+                x,y,z=sx,sy,sz
+                break
+            end
+        end
     end
     local found,seen={},{}
     for _,block in pairs(blocks) do
