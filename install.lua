@@ -3,9 +3,11 @@
 
 local INSTALLER_VERSION = "2.5-pinned-updates"
 local args = { ... }
-local revision = args[2] or "master"
-if revision ~= "master" and not (revision:match("^%x+$") and #revision >= 7 and #revision <= 40) then
-    error("revision must be master or a Git commit hash (7-40 characters)", 0)
+local DEFAULT_REVISION = "experimental/smart-chestplate"
+local revision = args[2] or DEFAULT_REVISION
+if revision ~= DEFAULT_REVISION and revision ~= "master"
+        and not (revision:match("^%x+$") and #revision >= 7 and #revision <= 40) then
+    error("revision must be experimental/smart-chestplate, master or a Git commit hash (7-40 characters)", 0)
 end
 local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/" .. revision .. "/"
 
@@ -120,7 +122,7 @@ end
 
 local function download(remotePath)
     -- A commit revision pins all downloads to one immutable version. A query
-    -- also helps refresh master, but cannot prove which commit master serves.
+    -- also helps refresh a branch, but cannot prove which commit it serves.
     local url = REPOSITORY .. remotePath .. "?m2os=" .. cacheBuster
     local response, reason = http.get(url, {
         ["User-Agent"] = "M2OS-Installer/1.0"

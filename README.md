@@ -3,18 +3,23 @@
 M2OS is a modular HUD for CC:Tweaked and Advanced Peripherals 0.8.2a. It does
 not modify or start `d.lua`.
 
+This is the experimental `experimental/smart-chestplate` branch, including the
+Smart Chestplate app and its fixes. The `master` branch contains the version
+from before the chestplate app was added. This branch's installer defaults to
+downloading experimental files; its URL must be used to update this version.
+
 ## One-command install
 
 On the Smart Glasses computer:
 
 ```text
-wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua glasses
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/experimental/smart-chestplate/install.lua glasses
 ```
 
 On the computer connected to the Create storage network:
 
 ```text
-wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua server
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/experimental/smart-chestplate/install.lua server
 ```
 
 Use `all` instead of `glasses` or `server` to install both roles. Running the
