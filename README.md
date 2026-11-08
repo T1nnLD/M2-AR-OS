@@ -301,9 +301,33 @@ Create package route, `outputAddress` and `outputInventory`. Ordinary `stock`,
 ## Context details
 
 The Context Inspector shows the block data included with a
-`player_interaction` event. For detailed storage/furnace data, connect that
-machine (or an AP Block Reader facing it) to the bridge computer and add its
-coordinate to `machines` in `m2os/server_config.lua`:
+`player_interaction` event. Enable **CONTEXT INFO** and use the Keyboard and
+Overlay modules. The current interaction is attack/dig (normally left click),
+not passive crosshair tracking.
+
+For detailed storage/furnace data, connect the inventory or an AP Block Reader
+facing the machine to the bridge's wired modem network. Activate the modems.
+Then bind it from the glasses without typing any coordinates:
+
+1. Aim at the actual inventory/machine and left click so its context card appears.
+2. Open the radial menu and choose **ПРИВЯЗАТЬ БЛОК**.
+3. Select that inventory's wired name, or the Reader aimed at it. Scroll or
+   Up/Down selects a row; click or Enter saves it. Press Esc to return to play.
+
+The bridge discovers device names using only peripheral metadata, without
+reading inventory contents or NBT. It cannot infer an ordinary inventory's
+coordinates from its wired name. Even identical inventories remain separate
+choices; matching names are sorted first but never bound automatically.
+The target is frozen while the picker is open. A saved choice reconnects that
+coordinate to the same device on future inspections and survives bridge restarts.
+
+Bindings live in `/m2os/context_machines.cfg` on the bridge. The optional
+`contextBindingsFile` setting changes this path; existing older configs use the
+default automatically. Both the glasses and bridge must be updated for the
+picker. New/removed peripherals appear on the next opening of the picker.
+If a peripheral is replaced and receives a different name, bind it again.
+
+Manual coordinate entries in `machines` still take priority:
 
 ```lua
 machines = {

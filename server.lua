@@ -1,5 +1,6 @@
 local util = require("m2os.lib.util")
 local i18n = require("m2os.lib.i18n")
+local ContextRegistry = require("m2os.lib.context_registry")
 
 local Server = {}
 
@@ -945,11 +946,9 @@ local function requestStock(ticker, address, itemName, count)
     return tonumber(result) or count
 end
 
-local function inspectMachine(config, payload)
-    local key = ("%s:%d:%d:%d"):format(
-        payload.dimension or "minecraft:overworld",
-        tonumber(payload.x) or 0, tonumber(payload.y) or 0, tonumber(payload.z) or 0)
-    local peripheralName = config.machines and config.machines[key]
+local function inspectMachine(registry, payload)
+    local peripheralName,key,err = registry:resolve(payload)
+    if err then return {message=err} end
     if not peripheralName then
         return { message = "No provider registered", key = key }
     end
@@ -1305,7 +1304,12 @@ local function handleRequest(state, sender, message)
             deadline = util.epoch() + (config.transactionTimeout or 45) * 1000
         }
     elseif operation == "inspect" then
-        response(config, sender, message.id, true, inspectMachine(config, payload))
+        response(config, sender, message.id, true, inspectMachine(state.contextRegistry, payload))
+    elseif operation == "context_discover" then
+        response(config, sender, message.id, true, state.contextRegistry:discover(payload))
+    elseif operation == "context_bind" then
+        local ok,result=state.contextRegistry:bind(payload,payload.provider)
+        response(config,sender,message.id,ok,ok and result or nil,not ok and result or nil)
     else
         response(config, sender, message.id, false, nil, "unknown operation " .. tostring(operation))
     end
@@ -1365,7 +1369,8 @@ function Server.run(config)
         itemDetailInflightRecovered = false,
         skippedItemDetails = 0, lastIndexWarning = nil,
         indexedSlots = 0, indexTotal = 0,
-        peripheralRefreshAt = nil
+        peripheralRefreshAt = nil,
+        contextRegistry = ContextRegistry.new(config)
     }
     refreshPeripherals(state)
     -- Enter the event loop before the first getItemDetail batch. This makes
@@ -1391,7 +1396,8 @@ function Server.run(config)
                     state.lastMessage = ("#%d discover"):format(sender)
                     rednet.send(sender, {
                         kind = "hello", key = config.sharedKey,
-                        name = "M2OS Create Bridge", version = 10,
+                        name = "M2OS Create Bridge", version = 11,
+                        contextBindings = true,
                         inventories = #state.inventories,
                         detectedInventories = state.discoveredInventoryCount,
                         incompatibleInventories = #state.incompatibleInventories,

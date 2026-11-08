@@ -70,7 +70,12 @@ return {
     transactionTimeout = 45,
     trustedIds = {}, -- empty means every computer with the shared key
 
-    -- Optional detailed context providers. Key format: dimension:x:y:z
+    -- Bind a targeted block from the glasses' "ПРИВЯЗАТЬ БЛОК" radial action.
+    -- Existing configs may omit this setting; the same path is the default.
+    contextBindingsFile = "/m2os/context_machines.cfg",
+
+    -- Optional detailed context providers. Manual entries override saved pairs.
+    -- Key format: dimension:x:y:z
     -- Value is the wired peripheral name of an inventory or Block Reader.
     machines = {
         -- ["minecraft:overworld:10:64:-20"] = "blockReader_0"

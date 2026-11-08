@@ -1,5 +1,6 @@
 local api = require("m2os.api")
 local util = require("m2os.lib.util")
+local Binding = require("m2os.lib.context_binding")
 
 local app = {
     id = "context",
@@ -12,19 +13,12 @@ local app = {
 
 local state = {
     target = nil,
+    lastTarget = nil,
     details = nil,
     expires = 0,
     providers = {},
     keyboard = nil
 }
-
-local function numberField(tableValue, names)
-    if type(tableValue) ~= "table" then return nil end
-    for _, name in ipairs(names) do
-        local value = tonumber(tableValue[name])
-        if value then return value end
-    end
-end
 
 local function blockFromArguments(...)
     local arguments = { ... }
@@ -51,6 +45,7 @@ local function coordinates(target)
 end
 
 local function draw(ctx)
+    if state.binding and state.binding.open then state.binding:draw() return end
     ctx.ui.clear()
     if not state.target then return end
     local width, height = ctx.system.getSize()
@@ -93,6 +88,7 @@ local function requestDetails(ctx, target)
     local x, y, z = coordinates(target)
     if not storage or not x or not y or not z then return end
     storage.inspect({
+        name = target.name,
         dimension = target.dimension or ctx.config.context.dimension,
         x = math.floor(x), y = math.floor(y), z = math.floor(z)
     }, function(ok, data)
@@ -105,6 +101,7 @@ end
 
 local function show(ctx, target, details)
     state.target = target
+    state.lastTarget = util.copy(target)
     state.details = details
     state.expires = util.epoch() + ctx.config.context.visibleSeconds * 1000
     for _, provider in pairs(state.providers) do
@@ -115,8 +112,23 @@ local function show(ctx, target, details)
     if not state.details then requestDetails(ctx, target) end
 end
 
+local function openBinding(ctx)
+    local target=state.lastTarget
+    local x,y,z=coordinates(target)
+    x,y,z=tonumber(x),tonumber(y),tonumber(z)
+    if not x or not y or not z or x~=x or y~=y or z~=z
+            or math.abs(x)>30000000 or math.abs(y)>30000000 or math.abs(z)>30000000 then
+        ctx.notify("Сначала укажи блок прицелом и нажми ЛКМ",ctx.config.theme.amber)
+        return
+    end
+    state.binding:show({name=target.name,dimension=target.dimension or ctx.config.context.dimension,
+        x=math.floor(x),y=math.floor(y),z=math.floor(z)})
+end
+
 function app.start(ctx)
     state.target, state.details = nil, nil
+    state.lastTarget = nil
+    state.binding = Binding.new(ctx,function(target) show(ctx,target) end,function() draw(ctx) end)
     state.keyboard = ctx.system.getModule("keyboard")
     if state.keyboard then
         -- AP only emits player_interaction for buttons explicitly claimed here.
@@ -125,18 +137,22 @@ function app.start(ctx)
     ctx.services.provide("context", {
         show = function(target, details) show(ctx, target, details) end,
         hide = function() state.target = nil draw(ctx) end,
+        bind = function() openBinding(ctx) end,
         addProvider = function(id, provider) state.providers[id] = provider end,
         removeProvider = function(id) state.providers[id] = nil end
     })
+    ctx.menu.add({id="context.bind",label="ПРИВЯЗАТЬ БЛОК",order=45,run=function() openBinding(ctx) end})
 end
 
 function app.onEvent(ctx, event, ...)
+    if state.binding and state.binding.open then return state.binding:onEvent(event,...) end
     if event ~= "player_interaction" then return end
     local target = blockFromArguments(...)
     if target then show(ctx, target) end
 end
 
 function app.update(ctx, now)
+    if state.binding and state.binding.open then return end
     if state.target and now >= state.expires then
         state.target, state.details = nil, nil
         draw(ctx)
@@ -144,10 +160,11 @@ function app.update(ctx, now)
 end
 
 function app.resize(ctx)
-    if state.target then draw(ctx) end
+    if state.target or (state.binding and state.binding.open) then draw(ctx) end
 end
 
 function app.stop(ctx)
+    if state.binding then state.binding:close() state.binding=nil end
     if state.keyboard then pcall(state.keyboard.setHandlingInteraction, 1, false) end
     state.keyboard = nil
     state.target, state.details = nil, nil

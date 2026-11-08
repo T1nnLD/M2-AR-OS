@@ -158,9 +158,23 @@ An app can add local information for a target before the bridge is queried:
 
 ```lua
 local context = ctx.services.get("context")
+context.bind() -- Opens the wired-provider picker for the last inspected block.
 context.addProvider("sample", function(target)
     if target.name == "example:block" then
         return { message = "Custom block information" }
     end
 end)
 ```
+
+The bridge supports `context_discover` with a target
+`{name, dimension, x, y, z}` and returns `{providers, provider, key}`. Provider
+entries contain `{name, kind, current, matches}`; kinds are `inventory` and
+`reader`. Discovery only checks capabilities and never calls `list` or
+`getBlockData`. `matches` is a sorting hint, not a coordinate match.
+
+`context_bind` accepts the same target plus `provider` and persists the selected
+pair in `contextBindingsFile` (default `/m2os/context_machines.cfg`). It returns
+`{provider, key, source}` on success. Invalid coordinates, offline/unsupported
+devices, conflicting manual `machines` entries and write failures are rejected.
+`inspect` resolves manual entries first, followed by saved bindings. Binding
+operations use the same shared-key/trusted-ID checks as other bridge requests.

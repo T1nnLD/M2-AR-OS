@@ -64,6 +64,7 @@ local common = {
 }
 
 local glasses = {
+    { "lib/context_binding.lua", "/m2os/lib/context_binding.lua" },
     { "api.lua", "/m2os/api.lua" },
     { "config.lua", "/m2os/config.lua", preserve = true },
     { "kernel.lua", "/m2os/kernel.lua" },
@@ -80,6 +81,7 @@ local glasses = {
 }
 
 local server = {
+    { "lib/context_registry.lua", "/m2os/lib/context_registry.lua" },
     { "server.lua", "/m2os/server.lua" },
     { "server_config.lua", "/m2os/server_config.lua", preserve = true },
     { "bin/m2os_server.lua", "/m2os_server.lua" }
