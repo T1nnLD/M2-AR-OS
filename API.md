@@ -136,6 +136,26 @@ success is returned and failures retain the previous rules. All calls use the
 bridge's shared-key/trusted-ID checks. The worker makes no queued withdrawal
 requests: it reads the current inventory again before each capped transfer.
 
+## World block search service
+
+```lua
+local search = ctx.services.get("block_search")
+search.show() -- Keyboard-based input panel; hide() leaves markers active.
+search.start("minecraft:diamond_ore", 8) -- success, normalizedQuery or error
+search.start("#c:ores/diamond", 8)
+search.status() -- {active, query, radius, actualRadius, total, shown, message, nearest}
+search.stop() -- stops polling and removes all world markers
+```
+
+The service schedules scans on later kernel updates, never inside an input
+callback. `nearest` contains integer `blockX/blockY/blockZ`, center `x/y/z`, and
+squared distance from the scan origin. Scan results and wireframes use absolute
+world positions, independent of GUI lifetime. Queries are exact registry IDs
+or `#tag` IDs; a missing namespace defaults to `minecraft`. Requested radius is
+1–16 and is further capped by the free server limit. The interval is at least
+2000ms, defaults to 5000ms, and also respects the server cooldown. Displayed
+markers are capped at 32 (default 24). No storage RPC or full block NBT is read.
+
 ## Context providers
 
 An app can add local information for a target before the bridge is queried:

@@ -62,6 +62,8 @@ local common = {
 }
 
 local glasses = {
+    { "lib/block_search.lua", "/m2os/lib/block_search.lua" },
+    { "apps/block_search.lua", "/m2os/apps/block_search.lua" },
     { "lib/restock_panel.lua", "/m2os/lib/restock_panel.lua" },
     { "api.lua", "/m2os/api.lua" },
     { "config.lua", "/m2os/config.lua", preserve = true },

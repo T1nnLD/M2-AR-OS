@@ -256,6 +256,40 @@ and `restockStartDelayMs`. Preserved old configs automatically use the defaults.
 Discovery and counting use basic inventory APIs; this feature does not enable
 full item metadata indexing or Create package requests.
 
+## Find and highlight blocks in the world
+
+Install a **Geo Scanner** in the player's Smart Glasses, together with the
+Overlay and Keyboard modules. Only the glasses need this update; the storage
+bridge is not involved. Select **ПОИСК БЛОКОВ** in the radial menu, type a block
+registry ID and press Enter or **Искать / обновить**:
+
+- `minecraft:diamond_ore` (or simply `diamond_ore`)
+- `create:item_vault`
+- `#c:ores/diamond` to match a block tag, including multiple ore variants
+
+Delete clears the field; Backspace edits it and paste is supported. The field
+expects registry IDs/tags, not localized item names. Radius +/- controls request
+1–16 blocks. The app reads the Geo Scanner's server configuration and caps the
+request to its free radius and maximum radius, respecting its cooldown. Glasses
+cannot pay for a scan beyond their free radius. The panel displays the actual
+radius, unique matches, displayed matches, and nearest block coordinates.
+
+Matches get gold wireframe boxes through walls. Closing the panel with Esc
+returns to play and leaves scanning/highlighting active. Open the panel and
+press **Остановить** to clear it. Periodic scans remove markers for mined or
+changed blocks. The default interval is five seconds; the nearest 24 matches
+are drawn to bound overlay load. With AP 0.8.2a the scan offsets point from the
+wearer's eye to block centers. Results are snapped to the block grid; a scan
+made while the player moves too far during the native call is discarded until
+a more accurate scan is possible. Unexpected native errors stop automatic
+scanning; cooldown errors wait for the next attempt.
+
+Settings are under `blockSearch` in the glasses config (`range`, `intervalMs`,
+`maxMarkers`, `stateFile`); preserved older configs use defaults automatically.
+The last valid query and requested radius are saved in `/m2os/block_search.cfg`.
+A HUD restart restores those fields with scanning off until explicitly started.
+This app loads on existing configs without editing their `modules` list.
+
 ## Context details
 
 The Context Inspector shows the block data included with a

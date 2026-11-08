@@ -255,6 +255,9 @@ end
 
 function Kernel:_loadApps()
     for _, moduleName in ipairs(self.config.modules) do require(moduleName) end
+    -- Configs are preserved by the installer. Load the new built-in search
+    -- on existing glasses without requiring a manual modules-list edit.
+    if fs.exists("/m2os/apps/block_search.lua") then require("m2os.apps.block_search") end
     for _, definition in pairs(api.getApps()) do self:register(definition) end
     table.sort(self.appOrder, function(a, b)
         return (a.definition.priority or 100) < (b.definition.priority or 100)

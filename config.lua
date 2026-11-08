@@ -45,6 +45,13 @@ return {
         boxThickness = 0.045
     },
 
+    blockSearch = {
+        range = 8, -- Requested radius, capped by the server's free radius.
+        intervalMs = 5000,
+        maxMarkers = 24, -- Nearest matches; maximum 32 to bound overlay load.
+        stateFile = "/m2os/block_search.cfg"
+    },
+
     context = {
         visibleSeconds = 5,
         dimension = "minecraft:overworld"
@@ -63,6 +70,7 @@ return {
         "m2os.apps.desktop",
         "m2os.apps.storage",
         "m2os.apps.context",
+        "m2os.apps.block_search",
         "m2os.apps.mob_tracker",
         "m2os.apps.radial_menu"
     }
