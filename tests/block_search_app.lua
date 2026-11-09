@@ -40,6 +40,11 @@ local scanner={scanBlocks=function() calls=calls+1 return blocks end,
     getConfiguration=function() return {operations={scan_blocks={maxFreeRadius=8}}} end}
 peripheral={find=function() return scanner,'back' end}
 local app=require('m2os.apps.block_search')
+local function tick()
+    app.update(ctx,now)
+    app.poll(ctx,now)
+    app.update(ctx,now)
+end
 app.start(ctx)
 actions['block_search.panel'].run()
 assert(mode=='block_search' and calls==0,'opening the GUI must not wait for the scanner')
@@ -47,9 +52,9 @@ assert(#objects==0,'wait for the Keyboard screen dimensions before the first dra
 app.onEvent(ctx,'paste','minecraft:diamond_ore')
 app.onEvent(ctx,'key',keys.enter,false)
 assert(calls==0,'Enter must render feedback before any native scan')
-now=100 app.update(ctx,now)
+now=100 tick()
 assert(#objects==0 and calls==0,'do not flash a panel or begin native work before layout settles')
-now=200 app.update(ctx,now)
+now=200 tick()
 assert(calls==1 and services.block_search.status().total==1)
 local world={}
 for _,object in ipairs(objects) do if object.properties.gui==false then world[#world+1]=object end end
@@ -62,11 +67,11 @@ for _,object in ipairs(world) do assert(not object.removed) end
 assert(#objects==created,'typing must edit existing text instead of rebuilding the panel and cursor')
 blocks[1].x=1.15 -- same block center after grid snapping, new measured distance.
 eyeX=0.35
-now=5200 app.update(ctx,now)
+now=5200 tick()
 assert(calls==2 and #objects==created,'refreshing results must reuse the panel, cursor and unchanged markers')
 for _,object in ipairs(gui) do assert(not object.removed) end
 local before=changes
-now=5250 app.update(ctx,now)
+now=5250 tick()
 assert(changes==before,'idle frames must not send redundant text/color updates')
 
 -- Resize bursts retain the previous clickable layout, then rebuild once
@@ -81,9 +86,9 @@ width,height=800,500
 now=5300 app.resize(ctx)
 now=5400 app.resize(ctx)
 assert(services.block_search.status().radius==8,'radius comes from shared tracker settings')
-now=5500 app.update(ctx,now)
+now=5500 tick()
 assert(#objects==created and not gui[1].removed)
-now=5580 app.update(ctx,now)
+now=5580 tick()
 assert(gui[1].removed and #objects>created,'build one replacement after the resize burst settles')
 local newButton,cursor
 for _,object in ipairs(objects) do
@@ -98,7 +103,7 @@ for _,object in ipairs(world) do assert(not object.removed,'resizing must leave 
 local bounded=objects[#objects]
 for i=1,12 do
     now=5580+i*50 width=800+i
-    app.resize(ctx) app.update(ctx,now)
+    app.resize(ctx) tick()
 end
 assert(bounded.removed,'continuous resize events must not postpone the replacement indefinitely')
 app.onEvent(ctx,'key',keys.escape)
@@ -109,7 +114,7 @@ app.onEvent(ctx,'player_mouse_move','back',10,10)
 assert(mode=='block_search','mouse movement before a reopened panel is built must be harmless')
 app.onEvent(ctx,'keyboard_close')
 blocks={}
-now=10200 app.update(ctx,now)
+now=10200 tick()
 for _,object in ipairs(world) do assert(object.removed,'removed blocks must lose their highlights') end
 app.stop(ctx)
 assert(not services.block_search.status().active)

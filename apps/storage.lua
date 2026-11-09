@@ -1611,7 +1611,6 @@ function app.onEvent(ctx, event, sender, message, protocol)
 end
 
 function app.update(ctx, now)
-    if state.restockPanel then state.restockPanel:update(now) end
     if state.panelOpen and state.pointerDirty and state.widgets then
         updatePanel(ctx)
     end
@@ -1619,6 +1618,10 @@ function app.update(ctx, now)
         state.drawAt = nil
         drawPanel(ctx)
     end
+end
+
+function app.logic(ctx, now)
+    if state.restockPanel then state.restockPanel:update(now) end
     if state.panelOpen and state.searchAt and now >= state.searchAt then
         state.searchAt = nil
         refresh(ctx, state.query)

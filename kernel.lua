@@ -1,8 +1,31 @@
 local api = require("m2os.api")
 local util = require("m2os.lib.util")
+local Scheduler = require("m2os.lib.scheduler")
 
 local Kernel = {}
 Kernel.__index = Kernel
+
+local function mailbox() return {head=1,tail=0} end
+local function enqueue(queue,event)
+    local last=queue[queue.tail]
+    -- Only adjacent motion events can be merged. A click is an ordering
+    -- barrier, so it always sees the preceding mouse position.
+    if last and last[1]=="player_mouse_move" and event[1]==last[1]
+            and type(last[2])=="number" and type(last[3])=="number"
+            and type(event[2])=="number" and type(event[3])=="number" then
+        last[2]=last[2]+event[2] last[3]=last[3]+event[3]
+    else queue.tail=queue.tail+1 queue[queue.tail]=event end
+end
+local function dequeue(queue)
+    if queue.head>queue.tail then return end
+    local event=queue[queue.head]
+    queue[queue.head]=nil queue.head=queue.head+1
+    if queue.head>queue.tail then queue.head=1 queue.tail=0 end
+    return event
+end
+local INPUT={key=true,key_up=true,char=true,paste=true,keyboard_open=true,keyboard_close=true,
+    glasses_key_pressed=true,player_interaction=true,player_mouse_move=true,player_mouse_click=true,
+    player_mouse_up=true,player_mouse_scroll=true}
 
 local function removeOverlayObject(overlay, object)
     if not object then return end
@@ -122,15 +145,42 @@ function Kernel:_makeContext(owner)
         getEyePosition = function() return kernel.overlay.getEyePosition() end,
         getModule = util.module,
         getInputMode = function() return kernel.inputMode end,
-        setInputMode = function(mode) kernel.inputMode = mode end,
+        setInputMode = function(mode)
+            kernel.inputMode=mode kernel.inputOwner=mode and owner.definition.id or nil
+        end,
         isEnabled = function(id) return kernel.apps[id] and kernel.apps[id].enabled or false end,
         enable = function(id, enabled) return kernel:setEnabled(id, enabled) end,
-        stop = function() kernel.running = false end,
+        stop = function()
+            kernel.running=false
+            if kernel.scheduler then kernel.scheduler:cancelAll() end
+        end,
         emit = function(name, ...) os.queueEvent(name, ...) end,
         -- Used by latency-sensitive input cursors. Callers must throttle this;
         -- normal UI updates remain batched by the kernel tick.
         flushOverlay = function() kernel.overlay.update() end,
+        restartSensor = function() kernel:_startSensor(owner) end,
+        cancelSensor = function()
+            if kernel.scheduler then kernel.scheduler:cancel(owner.definition.id..":__sensor") end
+        end,
         now = util.epoch
+    }
+
+    ctx.tasks = {
+        spawn = function(name,callback)
+            assert(kernel.scheduler,"background tasks require a running kernel")
+            assert(kernel.running and owner.enabled,"app is disabled or kernel is stopping")
+            assert(type(name)=="string" and name:sub(1,2)~="__","invalid task name")
+            assert(type(callback)=="function","task callback must be a function")
+            kernel.scheduler:spawn(owner.definition.id..":"..name,function() callback(ctx) end,
+                {owner=owner.definition.id,priority=100+ (owner.definition.priority or 100)})
+            return name
+        end,
+        cancel = function(name)
+            assert(type(name)=="string" and name:sub(1,2)~="__","invalid task name")
+            if kernel.scheduler then return kernel.scheduler:cancel(owner.definition.id..":"..name) end
+        end,
+        yield = function() return kernel.scheduler:yield() end,
+        sleep = function(seconds) return kernel.scheduler:sleep(seconds) end
     }
 
     ctx.services = {
@@ -172,7 +222,9 @@ function Kernel:register(definition)
         definition = definition,
         objects = {},
         enabled = false,
-        failures = 0
+        failures = 0,
+        failuresByMethod = {},
+        events = mailbox()
     }
     owner.context = self:_makeContext(owner)
     self.apps[definition.id] = owner
@@ -207,19 +259,41 @@ function Kernel:setEnabled(id, enabled)
     if owner.enabled == enabled then return true end
 
     if enabled then
+        if not self.running then return false,"kernel is stopping" end
         owner.enabled = true
-        local ok, err = pcall(function()
-            if owner.definition.start then owner.definition.start(owner.context) end
-        end)
-        if not ok then
-            owner.enabled = false
-            self:_dropOwned(owner)
-            self:notify(id .. ": " .. tostring(err), self.config.theme.red)
-            return false, err
+        owner.failures=0 owner.failuresByMethod={}
+        owner.starting = true
+        owner.events = mailbox()
+        local function start()
+            local ok, err = pcall(function()
+                if owner.definition.start then owner.definition.start(owner.context) end
+            end)
+            owner.starting = false
+            if not ok then
+                owner.enabled = false
+                if self.scheduler then self.scheduler:cancelOwner(id) end
+                if self.inputOwner==id or self.inputMode==id or (id=="storage" and self.inputMode=="restock") then
+                    self.inputMode=nil self.inputOwner=nil
+                end
+                self:_dropOwned(owner)
+                self:notify(id .. ": " .. tostring(err), self.config.theme.red)
+                return false,err
+            end
+            if self.scheduler and owner.enabled then self:_startLogic(owner) self:_startSensor(owner) end
+            return true
         end
+        if self.scheduler then
+            self.scheduler:spawn(id..":__start",start,{owner=id,priority=100+(owner.definition.priority or 100)})
+        else local ok,err=start() if not ok then return false,err end end
     else
-        if owner.definition.stop then pcall(owner.definition.stop, owner.context) end
         owner.enabled = false
+        owner.starting = false
+        if self.scheduler then self.scheduler:cancelOwner(id) end
+        if owner.definition.stop then pcall(owner.definition.stop, owner.context) end
+        owner.events = mailbox()
+        if self.inputOwner==id or self.inputMode==id or (id=="storage" and self.inputMode=="restock") then
+            self.inputMode=nil self.inputOwner=nil
+        end
         self:_dropOwned(owner)
     end
 
@@ -238,14 +312,15 @@ end
 
 function Kernel:_invoke(owner, method, ...)
     local callback = owner.definition[method]
-    if not callback or not owner.enabled then return end
+    if not callback or not owner.enabled or owner.starting then return end
     local ok, result = pcall(callback, owner.context, ...)
     if ok then
-        owner.failures = 0
+        owner.failuresByMethod[method] = 0
         return result
     end
     local err = result
-    owner.failures = owner.failures + 1
+    owner.failuresByMethod[method] = (owner.failuresByMethod[method] or 0)+1
+    owner.failures = owner.failuresByMethod[method]
     print(("[%s/%s] %s"):format(owner.definition.id, method, tostring(err)))
     if owner.failures >= 3 then
         self:notify(owner.definition.id .. " disabled after errors", self.config.theme.red)
@@ -275,47 +350,154 @@ function Kernel:_startApps()
 end
 
 function Kernel:_shutdown()
+    self.running=false
+    if self.scheduler then self.scheduler:cancelAll() end
+    self.inputMode=nil self.inputOwner=nil
     for index = #self.appOrder, 1, -1 do
         local owner = self.appOrder[index]
-        if owner.enabled and owner.definition.stop then pcall(owner.definition.stop, owner.context) end
+        local enabled=owner.enabled
+        owner.enabled=false owner.starting=false
+        if enabled and owner.definition.stop then pcall(owner.definition.stop, owner.context) end
         self:_dropOwned(owner)
         owner.enabled = false
     end
     pcall(self.overlay.update)
 end
 
-function Kernel:loop()
-    self.overlay.setAutoUpdate(false)
-    self:_loadApps()
-    self:_startApps()
-    self:notify(self.config.name .. " " .. self.config.version .. " online", self.config.theme.green)
+function Kernel:_startLogic(owner)
+    if not self.scheduler or not self.running or not owner.enabled or owner.starting then return end
+    if not owner.definition.logic and not owner.definition.onEvent then return end
+    local interval=math.max(50,tonumber(owner.definition.logicIntervalMs) or 50)
+    self.scheduler:spawn(owner.definition.id..":__logic",function()
+        local nextAt,lastTick=0,util.epoch()
+        while self.running and owner.enabled do
+            for _=1,32 do
+                local event=dequeue(owner.events)
+                if not event then break end
+                self:_invoke(owner,"onEvent",table.unpack(event,1,event.n or #event))
+                if not self.running or not owner.enabled then return end
+            end
+            local now=util.epoch()
+            if owner.definition.logic and now>=nextAt then
+                self:_invoke(owner,"logic",now,(now-lastTick)/1000)
+                if not self.running or not owner.enabled then return end
+                lastTick=now nextAt=util.epoch()+interval
+                self.scheduler:timer(interval/1000)
+            end
+            if owner.events.head<=owner.events.tail then self.scheduler:yield()
+            else os.pullEventRaw() end
+        end
+    end,{owner=owner.definition.id,priority=100+(owner.definition.priority or 100)})
+end
 
-    local lastTick = util.epoch()
-    local timer = os.startTimer(0.05)
+function Kernel:_startSensor(owner)
+    if not self.scheduler or not self.running then return end
+    local id=owner.definition.id..":__sensor"
+    self.scheduler:cancel(id)
+    if not owner.enabled or owner.starting or not owner.definition.poll then return end
+    local interval=math.max(50,tonumber(owner.definition.pollIntervalMs) or 50)
+    self.scheduler:spawn(id,function()
+        local lastTick=util.epoch()
+        while self.running and owner.enabled do
+            local now=util.epoch()
+            self:_invoke(owner,"poll",now,(now-lastTick)/1000)
+            if not self.running or not owner.enabled then return end
+            lastTick=now
+            -- Schedule after completion, never catch up with overlapping scans.
+            self.scheduler:sleep(interval/1000)
+        end
+    end,{owner=owner.definition.id,priority=10000+(owner.definition.priority or 100)})
+end
+
+function Kernel:_dispatchInput(event)
+    local lifecycle=event[1]=="keyboard_open" or event[1]=="keyboard_close"
+    if event[1]=="keyboard_open" and self.inputMode then
+        for _,owner in ipairs(self.appOrder) do self:_invoke(owner,"onEvent","keyboard_close") end
+        self.inputMode=nil self.inputOwner=nil
+    end
+    local current=not lifecycle and self.inputMode and self.apps[self.inputOwner or self.inputMode] or nil
+    if current and self:_invoke(current,"onEvent",table.unpack(event,1,event.n or #event)) then return end
+    if not self.running then return end
+    for _,owner in ipairs(self.appOrder) do
+        if owner~=current then
+            local consumed=self:_invoke(owner,"onEvent",table.unpack(event,1,event.n or #event))
+            if not self.running then return end
+            if consumed and not lifecycle then break end
+        end
+    end
+    if event[1]=="keyboard_close" then self.inputMode=nil self.inputOwner=nil end
+end
+
+function Kernel:_uiLoop()
+    local lastTick=util.epoch()
+    local nextAt=lastTick+50
+    self.scheduler:timer(0.05)
     while self.running do
-        local event = { os.pullEventRaw() }
-        if event[1] == "terminate" then
-            self.running = false
-        elseif event[1] == "timer" and event[2] == timer then
-            local now = util.epoch()
-            local oldWidth, oldHeight = self.width, self.height
+        local input=false
+        for _=1,64 do
+            local event=dequeue(self.inputEvents)
+            if not event then break end
+            input=true self:_dispatchInput(event)
+            if not self.running then return end
+        end
+        local now=util.epoch()
+        if now>=nextAt then
+            local oldWidth,oldHeight=self.width,self.height
             self:_measure()
-            if oldWidth ~= self.width or oldHeight ~= self.height then
-                for _, owner in ipairs(self.appOrder) do
-                    self:_invoke(owner, "resize", self.width, self.height)
+            if oldWidth~=self.width or oldHeight~=self.height then
+                for _,owner in ipairs(self.appOrder) do
+                    self:_invoke(owner,"resize",self.width,self.height)
+                    if not self.running then return end
                 end
             end
-            for _, owner in ipairs(self.appOrder) do
-                self:_invoke(owner, "update", now, (now - lastTick) / 1000)
+            for _,owner in ipairs(self.appOrder) do
+                self:_invoke(owner,"update",now,(now-lastTick)/1000)
+                if not self.running then return end
             end
-            lastTick = now
+            lastTick=now nextAt=util.epoch()+50
+            self.scheduler:timer(0.05)
             self.overlay.update()
-            timer = os.startTimer(0.05)
-        else
-            for _, owner in ipairs(self.appOrder) do
-                if self:_invoke(owner, "onEvent", table.unpack(event)) then break end
-            end
+        elseif input then
+            -- Input feedback does not wait for the next frame or a sensor.
+            self.overlay.update()
         end
+        if self.inputEvents.head<=self.inputEvents.tail then self.scheduler:yield()
+        else os.pullEventRaw() end
+    end
+end
+
+function Kernel:_startRuntime()
+    self.overlay.setAutoUpdate(false)
+    self.inputEvents=mailbox()
+    self.scheduler=Scheduler.new(function(task,err)
+        self:notify("Task "..task.id..": "..tostring(err),self.config.theme.red)
+        if task.owner=="__kernel" then self.running=false self.scheduler:cancelAll()
+        else self:setEnabled(task.owner,false) end
+    end)
+    self:_loadApps()
+    self.scheduler:spawn("__gui",function() self:_uiLoop() end,{owner="__kernel",priority=0})
+    self:_startApps()
+    self:notify(self.config.name .. " " .. self.config.version .. " online (async)", self.config.theme.green)
+    self.scheduler:step()
+end
+
+function Kernel:_stepRuntime(event)
+    if event[1]=="terminate" then
+        self.running=false self.scheduler:cancelAll() return
+    end
+    if INPUT[event[1]] then enqueue(self.inputEvents,event)
+    elseif event[1]~="task_complete" and not self.scheduler:isInternal(event) then
+        for _,owner in ipairs(self.appOrder) do
+            if owner.enabled and owner.definition.onEvent then enqueue(owner.events,event) end
+        end
+    end
+    self.scheduler:step(event)
+end
+
+function Kernel:loop()
+    self:_startRuntime()
+    while self.running do
+        self:_stepRuntime(table.pack(os.pullEventRaw()))
     end
     self:_shutdown()
 end

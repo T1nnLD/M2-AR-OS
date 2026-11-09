@@ -3,9 +3,11 @@
 
 local INSTALLER_VERSION = "2.5-pinned-updates"
 local args = { ... }
-local revision = args[2] or "master"
-if revision ~= "master" and not (revision:match("^%x+$") and #revision >= 7 and #revision <= 40) then
-    error("revision must be master or a Git commit hash (7-40 characters)", 0)
+local DEFAULT_REVISION = "experimental/async-gui"
+local revision = args[2] or DEFAULT_REVISION
+if revision ~= DEFAULT_REVISION and revision ~= "master"
+        and not (revision:match("^%x+$") and #revision >= 7 and #revision <= 40) then
+    error("revision must be experimental/async-gui, master or a Git commit hash (7-40 characters)", 0)
 end
 local REPOSITORY = "https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/" .. revision .. "/"
 
@@ -62,6 +64,7 @@ local common = {
 }
 
 local glasses = {
+    { "lib/scheduler.lua", "/m2os/lib/scheduler.lua" },
     { "lib/block_search.lua", "/m2os/lib/block_search.lua" },
     { "apps/block_search.lua", "/m2os/apps/block_search.lua" },
     { "lib/restock_panel.lua", "/m2os/lib/restock_panel.lua" },

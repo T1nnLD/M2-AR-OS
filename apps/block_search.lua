@@ -22,14 +22,23 @@ local function close(ctx)
 end
 
 local function startSearch(ctx,query)
-    local ok,result=state.search:start(query)
+    local normalized,err=Search.normalize(query)
+    if not normalized then state.message=err state.bad=true return false,err end
+    if ctx.system.cancelSensor then ctx.system.cancelSensor() end
+    local ok,result=state.search:start(normalized)
     if not ok then state.message=result state.bad=true return false,result end
+    if ctx.system.restartSensor then ctx.system.restartSensor() end
     state.query=result state.message=nil state.bad=false
     if state.path then
         local written,saved,err=pcall(util.writeTable,state.path,{version=1,query=result})
         if not written or not saved then ctx.notify("Поиск запущен; настройки не сохранены: "..tostring(written and err or saved),ctx.config.theme.amber) end
     end
     return true,result
+end
+
+local function stopSearch(ctx)
+    if ctx.system.cancelSensor then ctx.system.cancelSensor() end
+    state.search:stop() state.message=nil state.bad=false
 end
 
 local function updateContents(ctx)
@@ -93,7 +102,7 @@ local function draw(ctx)
     text(12,78,"Примеры: create:item_vault · #c:ores/diamond",theme.gray,0.70)
     text(12,101,"Непрерывный поиск при движении",theme.gray)
     button(12,124,162,23,"Искать / обновить",function() startSearch(ctx,state.query) end)
-    button(184,124,164,23,"Остановить",function() state.search:stop() state.message=nil state.bad=false end)
+    button(184,124,164,23,"Остановить",function() stopSearch(ctx) end)
     state.widgets.status=text(12,157,"",theme.white,0.74)
     state.widgets.detail=text(12,177,"",theme.gray,0.70)
     text(12,201,"Enter: искать · Delete: очистить · Esc: в игру",theme.gray,0.68)
@@ -143,7 +152,7 @@ function app.start(ctx)
             local success,result=startSearch(ctx,query)
             render(ctx) return success,result
         end,
-        stop=function() state.search:stop() state.message=nil state.bad=false render(ctx) end,
+        stop=function() stopSearch(ctx) render(ctx) end,
         status=function()
             return {active=state.search.active,query=state.search.query,radius=state.search.radius,
                 actualRadius=state.search.scanRange,intervalMs=state.search.interval,total=state.search.total,shown=state.search.shown,
@@ -156,7 +165,9 @@ function app.onEvent(ctx,event,...)
     local values={}
     for _,value in ipairs({...}) do if type(value)=="number" then values[#values+1]=value end end
     if event=="peripheral_detach" and ({...})[1]==state.search.scannerName then
+        if ctx.system.cancelSensor then ctx.system.cancelSensor() end
         state.search.scanner=nil state.search:clear()
+        if state.search.active and ctx.system.restartSensor then ctx.system.restartSensor() end
     end
     if not state.open then return end
     if event=="keyboard_close" then close(ctx) return true end
@@ -203,8 +214,11 @@ function app.update(ctx,now)
         clearGui(ctx)
         render(ctx)
     end
-    state.search:update(now)
     if state.open then render(ctx,false) end
+end
+function app.poll(ctx,now)
+    if state.open and not state.widgets and state.drawAt and now<state.drawAt then return end
+    state.search:update(now)
 end
 function app.resize(ctx)
     if not state.open then return end

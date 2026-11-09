@@ -1,4 +1,4 @@
-# M2OS app API v1
+# M2OS app API v1 — experimental asynchronous runtime
 
 An app is a Lua module which calls `m2os.api.registerApp` and returns its
 descriptor. Add the module name to `modules` in `m2os/config.lua`.
@@ -25,6 +25,15 @@ function app.start(ctx)
 end
 
 function app.update(ctx, nowMs, deltaSeconds)
+    -- Fast GUI updates only; do not wait for scanners here.
+end
+
+function app.poll(ctx, nowMs, deltaSeconds)
+    -- Sensor I/O. Independent cancellable worker for this app.
+end
+
+function app.logic(ctx, nowMs, deltaSeconds)
+    -- Background deadlines, networking and other non-GUI logic.
 end
 
 function app.onEvent(ctx, event, ...)
@@ -59,11 +68,21 @@ with `ctx.system.setInputMode(nil)` when the interactive window closes.
 
 ## Lifecycle
 
-- `start(ctx)` runs when enabled.
-- `update(ctx, nowMs, deltaSeconds)` runs on the 50 ms kernel tick.
-- `onEvent(ctx, event, ...)` receives raw CC events.
+- `start(ctx)` runs asynchronously when enabled. GUI/events/polling for this app
+  begin only after it completes; `setEnabled` acknowledges scheduling, not completion.
+- `update(ctx, nowMs, deltaSeconds)` runs on the 50 ms GUI tick. Keep it nonblocking.
+- `poll(ctx, nowMs, deltaSeconds)` runs in a separate sensor task per app, with
+  `pollIntervalMs` (minimum/default 50) between completed calls.
+- `logic(ctx, nowMs, deltaSeconds)` runs on that app's backend worker, with
+  `logicIntervalMs` (minimum/default 50). Backend events share this worker.
+- `onEvent(ctx, event, ...)` receives input on the GUI task; returning true
+  consumes it. The active input owner is tried first. Keyboard open/close is
+  broadcast. Non-input events are broadcast to per-app backend mailboxes;
+  returning true there does not prevent another app from receiving its copy.
+  Internal scheduler timers/wakes and native `task_complete` are not passed to
+  these callbacks; native waits inside scheduled functions still receive them.
 - `resize(ctx, width, height)` runs after the glasses GUI size changes.
-- `stop(ctx)` runs before disable/shutdown.
+- `stop(ctx)` performs nonblocking cleanup after owned tasks/timers have been cancelled.
 
 Three errors in a row disable a non-required app. Every overlay object created
 through `ctx.ui` belongs to the app and is removed automatically when the app is
@@ -91,7 +110,35 @@ disabled. Apps must never call `overlay.clear()`.
 - `ctx.notify(message, color)`
 
 Services are normal Lua tables and calls are local. They disappear automatically
-when their owner app stops.
+when their owner app stops. During asynchronous startup a service can be absent;
+consumers should handle that until its owner finishes initialization.
+
+## Owned background tasks
+
+```lua
+ctx.tasks.spawn("read", function(ctx)
+    local data = peripheral.call("back", "someMethod") -- may yield
+    -- Validate results, then publish a complete result to app state.
+end)
+ctx.tasks.cancel("read")
+ctx.tasks.sleep(0.1) -- wait using a scheduler-owned, cancellable timer
+
+-- During a long CPU loop in poll/logic/a spawned task:
+ctx.tasks.yield()
+```
+
+Spawning the same local name replaces/cancels its previous task. The returned
+handle is that local name. Names starting `__` belong to the kernel. Disabling
+the app cancels all its tasks; a late native response cannot resume a cancelled
+coroutine. Cancellation does not undo native Java work already submitted.
+Scheduler-managed sleeps/timers are cancelled too; timers created directly with
+`os.startTimer` are outside that ownership and should be managed by their caller.
+`os.pullEvent`/`os.pullEventRaw` filters work independently in every task.
+`ctx.tasks.yield()` schedules a continuation so pending input gets priority.
+
+`ctx.system.cancelSensor()` cancels this app's current `poll` worker;
+`ctx.system.restartSensor()` replaces it with a fresh worker. The block search
+uses these around query changes and Stop to invalidate in-flight scan results.
 
 ## Storage service
 

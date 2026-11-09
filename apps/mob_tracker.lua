@@ -281,7 +281,10 @@ local function scan(ctx, eyeX, eyeY, eyeZ)
     scanBackoff = 0
 
     local targets = {}
+    local inspected=0
     for _, entity in pairs(entities) do
+        inspected=inspected+1
+        if inspected%256==0 and ctx.tasks then ctx.tasks.yield() end
         if isTarget(entity, ctx.config.tracker) then
             entity.x, entity.y, entity.z = tonumber(entity.x), tonumber(entity.y), tonumber(entity.z)
             entity._distanceSquared = entity.x * entity.x + entity.y * entity.y + entity.z * entity.z
@@ -324,7 +327,7 @@ function app.start()
     scanBackoff = 0
 end
 
-function app.update(ctx, now)
+function app.poll(ctx, now)
     if now < nextScan then return end
     local x, y, z = ctx.system.getEyePosition()
     if x and y and z then scan(ctx, x, y, z) end

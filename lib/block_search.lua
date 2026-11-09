@@ -173,6 +173,7 @@ function Search:update(now)
         end
     end
     local found,seen={},{}
+    local inspected=0
     for _,block in pairs(blocks) do
         if Search.matches(block,self.query) then
             local dx,dy,dz=finite(block.x),finite(block.y),finite(block.z)
@@ -188,6 +189,8 @@ function Search:update(now)
                 end
             end
         end
+        inspected=inspected+1
+        if inspected%256==0 and self.ctx.tasks then self.ctx.tasks.yield() end
     end
     table.sort(found,function(a,b)
         if a.distance~=b.distance then return a.distance<b.distance end
@@ -198,6 +201,7 @@ function Search:update(now)
         local block=found[i]
         visible[block.key]=true
         if not self.markers[block.key] then self.markers[block.key]=self:marker(block) end
+        if i%8==0 and self.ctx.tasks then self.ctx.tasks.yield() end
     end
     for key,parts in pairs(self.markers) do
         if not visible[key] then

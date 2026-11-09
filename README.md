@@ -3,18 +3,23 @@
 M2OS is a modular HUD for CC:Tweaked and Advanced Peripherals 0.8.2a. It does
 not modify or start `d.lua`.
 
+This is the experimental `experimental/async-gui` branch, based on the stable
+HUD. GUI/input, application logic and sensor polling run in independent
+cooperative tasks. The `master` branch remains the stable synchronous runtime;
+the separate chestplate experiment is not included here.
+
 ## One-command install
 
 On the Smart Glasses computer:
 
 ```text
-wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua glasses
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/experimental/async-gui/install.lua glasses
 ```
 
 On the computer connected to the Create storage network:
 
 ```text
-wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua server
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/experimental/async-gui/install.lua server
 ```
 
 Use `all` instead of `glasses` or `server` to install both roles. Running the
@@ -37,6 +42,34 @@ m2os
 
 The first start creates `/m2os-state.cfg`. App switches selected through the
 radial menu are remembered there.
+
+## Experimental asynchronous runtime
+
+Only the glasses need updating to try the new runtime. This branch's installer
+defaults to `experimental/async-gui`; use this branch's URL for future updates.
+The startup message includes `(async)` so the installed runtime can be checked.
+
+- GUI updates and input have their own task. Input feedback flushes immediately
+  after dispatch instead of waiting for a sensor or a later GUI frame.
+- Each app's backend events/`logic()` have an independent worker. Replies are
+  buffered while that app waits, then processed once in arrival order.
+- Environment Detector and Geo Scanner each have their own `poll()` task.
+  Their existing server radius/cooldown limits remain in effect. A task never
+  starts another overlapping poll while its previous call is waiting.
+- Large scan results yield periodically so mouse events can be serviced before
+  all results have been processed. Cancelling or changing a block search drops
+  the old waiting coroutine, so its late result cannot restore old highlights.
+- App initialization is asynchronous too: loading a logo cannot hold up another
+  app's input or sensor. Frames/events skip an app until its start completes.
+- Disabling an app cancels its owned tasks and timers before cleanup. Shutdown
+  cancels every task and removes its overlay objects. Error counters for sensor
+  callbacks are not reset by successful GUI frames.
+
+This is cooperative Lua concurrency, not client-side Lua or simultaneous CPU
+threads. A task must yield while waiting or processing a large result. Native
+Java work still executes according to AP/CC scheduling, and network ping and
+AP's tick-batched mouse input remain. Synchronous work inside a plugin's GUI
+callback can still delay that GUI task; use a background task for such work.
 
 THREAT BOXES supports living mobs of any mod, including passive and neutral mobs.
 Players, armor stands, dead mobs and nonliving entities are excluded. The nearest
