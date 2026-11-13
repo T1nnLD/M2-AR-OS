@@ -1,4 +1,4 @@
-# M2OS app API v1 — experimental asynchronous runtime
+# M2OS app API v1 — asynchronous runtime
 
 An app is a Lua module which calls `m2os.api.registerApp` and returns its
 descriptor. Add the module name to `modules` in `m2os/config.lua`.
@@ -97,6 +97,50 @@ disabled. Apps must never call `overlay.clear()`.
 - `ctx.ui.text(x, y, text, color, size, z, shadow)`
 - `ctx.ui.remove(object)`
 - `ctx.ui.clear()` — only this app's objects.
+
+## Shared windows
+
+Create a retained modal with `ctx.ui.window`. The kernel handles its GUI frame
+updates, settled resizes and cleanup automatically:
+
+```lua
+local window
+local message = "Готово"
+function app.start(ctx)
+    window = ctx.ui.window({
+        width = 320, height = 160,
+        build = function(w)
+            w:text("status", 12, 15, "")
+            w:button("action", 12, 45, 140, 22, "Обновить", function()
+                message = "Нажато"
+            end)
+        end,
+        update = function(w)
+            w:set("status", "setContent", message)
+        end
+    })
+    ctx.menu.add({id="sample.open", label="ОКНО", run=function() window:show() end})
+end
+function app.onEvent(ctx, event, ...)
+    return window:onEvent(event, ...)
+end
+```
+
+The window claims its app's input mode by default; `mode` can override the name.
+`onClose(window)` can reset application state. Its initial display waits 180ms
+for Keyboard screen geometry. A resize burst is coalesced with a 500ms maximum
+wait; the old layout stays clickable until replacement. The pointer retains its
+position relative to the panel. Ordinary `draw()` calls update existing objects
+without clearing, re-centering or recreating the cursor.
+
+Coordinates passed to `text`, `rectangle` and `button` are local to the window.
+`set(id, method, value)` caches single-value setters such as `setContent`,
+`setColor` and `setOpacity`. Button objects use IDs `id.label` and
+`id.background`; `enableButton(id, boolean)` controls hit testing. `draw()`
+publishes changed contents immediately; the kernel performs periodic updates.
+`close()` removes only the window's own objects, leaving its app's world markers
+alone. Use unique widget IDs within a window and keep build/update callbacks
+nonblocking; sensor work still belongs in `poll` or an owned background task.
 
 ## System and services
 

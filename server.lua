@@ -3,6 +3,7 @@ local i18n = require("m2os.lib.i18n")
 local Restock = require("m2os.lib.restock")
 
 local Server = {}
+local BRIDGE_VERSION = 12
 
 -- getItemDetail is a synchronous main-thread peripheral call. Calling it for
 -- dozens of one-count items in a large Create vault can trip the dedicated
@@ -996,7 +997,7 @@ end
 local function printStatus(state)
     term.clear()
     term.setCursorPos(1, 1)
-    print("M2OS STORAGE BRIDGE")
+    print("M2OS STORAGE BRIDGE v"..BRIDGE_VERSION)
     print("Computer: " .. os.getComputerID())
     print("Modem:   " .. (state.modemName or "NOT FOUND"))
     print("Ticker:  " .. (state.ticker and "ONLINE"
@@ -1059,6 +1060,7 @@ local function handleRequest(state, sender, message)
 
     if operation == "ping" then
         response(config, sender, message.id, true, {
+            version=BRIDGE_VERSION,restock=true,
             ticker = state.ticker ~= nil, manager = state.manager ~= nil,
             inventories = #state.inventories, direct = true,
             itemVaults = countInventoryKind(state.inventories, "item_vault"),
@@ -1403,7 +1405,7 @@ function Server.run(config)
                     state.lastMessage = ("#%d discover"):format(sender)
                     rednet.send(sender, {
                         kind = "hello", key = config.sharedKey,
-                        name = "M2OS Create Bridge", version = 12,
+                        name = "M2OS Create Bridge", version = BRIDGE_VERSION,
                         restock = true,
                         inventories = #state.inventories,
                         detectedInventories = state.discoveredInventoryCount,

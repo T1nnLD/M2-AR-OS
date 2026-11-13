@@ -158,6 +158,10 @@ local function send(ctx, operation, payload, callback)
         if callback then callback(false, nil, reason) end
         return nil
     end
+    if operation:match("^restock_") and not state.restockSupported then
+        if callback then callback(false,nil,"Обнови и перезапусти мост хранилища: нужна версия 12 или новее") end
+        return nil
+    end
     state.sequence = state.sequence + 1
     local id = ("%d:%d:%d"):format(os.getComputerID(), util.epoch(), state.sequence)
     local message = {
@@ -168,7 +172,7 @@ local function send(ctx, operation, payload, callback)
         payload = payload or {}
     }
     state.pending[id] = {
-        callback = callback, started = util.epoch(), operation = operation
+        callback = callback, started = util.epoch(), operation = operation, serverId=state.serverId
     }
     rednet.send(state.serverId, message, ctx.config.storage.protocol)
     return id
@@ -1094,6 +1098,7 @@ local function showRestock(ctx,item)
     local mode=ctx.system.getInputMode()
     if mode and mode~="storage" and mode~="restock" then ctx.notify("Сначала закрой текущее окно",ctx.config.theme.amber) return end
     if state.panelOpen then togglePanel(ctx) end
+    if not bridgeReady() or not state.restockSupported then discover(ctx) end
     state.restockPanel:show(item)
 end
 
@@ -1101,6 +1106,7 @@ function app.start(ctx)
     state.restockPanel=RestockPanel.new(ctx,function(operation,payload,callback) return send(ctx,operation,payload,callback) end)
     state.serverId = ctx.config.storage.serverId
     state.serverVersion = nil
+    state.restockSupported = false
     state.legacyServerId = nil
     state.indexed = 0
     state.indexTotal = 0
@@ -1124,7 +1130,7 @@ function app.start(ctx)
         status = function()
             return {
                 online = bridgeReady(), serverId = state.serverId,
-                version = state.serverVersion, status = state.status
+                version = state.serverVersion, status = state.status, restock=state.restockSupported
             }
         end,
         request = function(operation, payload, callback) return send(ctx, operation, payload, callback) end,
@@ -1586,15 +1592,20 @@ function app.onEvent(ctx, event, sender, message, protocol)
             -- A late reply from an obsolete bridge must never replace a
             -- compatible one. This matters on servers where an old bridge
             -- computer was left running somewhere in loaded chunks.
+            if bridgeReady() and sender~=state.serverId
+                    and version<=(tonumber(state.serverVersion) or 0) then return end
             state.serverId = sender
             state.serverVersion = version
+            state.restockSupported = message.restock==true or (message.restock==nil and version>=12)
+            if state.restockSupported and state.restockPanel then state.restockPanel:bridgeReady() end
             state.status = "ONLINE"
             state.statusDetail = nil
             if state.panelOpen then refresh(ctx) end
-        elseif not bridgeReady() then
+        elseif not bridgeReady() or sender==state.serverId then
             state.legacyServerId = sender
             state.serverId = nil
             state.serverVersion = nil
+            state.restockSupported = false
             state.status = "UPDATE BRIDGE"
             state.statusDetail = "Старый мост #" .. tostring(sender)
                 .. " — обнови и перезапусти его"
@@ -1602,15 +1613,16 @@ function app.onEvent(ctx, event, sender, message, protocol)
         end
         return
     end
-    if message.kind ~= "response" or not message.id then return end
+    if message.kind ~= "response" or message.key~=ctx.config.storage.sharedKey or not message.id then return end
     local pending = state.pending[message.id]
     if not pending then return end
+    if pending.serverId and sender~=pending.serverId then return end
     state.pending[message.id] = nil
-    if message.ok then state.serverId = sender end
     if pending.callback then pending.callback(message.ok, message.data, message.error) end
 end
 
 function app.update(ctx, now)
+    if state.restockPanel and state.restockPanel.open then state.restockPanel:frame(now) end
     if state.panelOpen and state.pointerDirty and state.widgets then
         updatePanel(ctx)
     end
@@ -1642,7 +1654,7 @@ function app.logic(ctx, now)
 end
 
 function app.resize(ctx)
-    if state.restockPanel and state.restockPanel.open then state.restockPanel:draw() return end
+    if state.restockPanel and state.restockPanel.open then state.restockPanel:resize() return end
     if not state.panelOpen then return end
     ctx.ui.clear()
     state.widgets = nil

@@ -1,6 +1,7 @@
 local api = require("m2os.api")
 local util = require("m2os.lib.util")
 local Scheduler = require("m2os.lib.scheduler")
+local Window = require("m2os.lib.window")
 
 local Kernel = {}
 Kernel.__index = Kernel
@@ -139,6 +140,11 @@ function Kernel:_makeContext(owner)
         config = self.config,
         ui = self:_makeUi(owner)
     }
+    ctx.ui.window=function(options)
+        local window=Window.new(ctx,options)
+        owner.windows[window]=true
+        return window
+    end
 
     ctx.system = {
         getSize = function() return kernel.width, kernel.height, kernel.scale end,
@@ -224,6 +230,7 @@ function Kernel:register(definition)
         enabled = false,
         failures = 0,
         failuresByMethod = {},
+        windows = {},
         events = mailbox()
     }
     owner.context = self:_makeContext(owner)
@@ -243,6 +250,8 @@ function Kernel:register(definition)
 end
 
 function Kernel:_dropOwned(owner)
+    for window in pairs(owner.windows) do window:close() end
+    owner.windows={}
     owner.context.ui.clear()
     for name, service in pairs(self.services) do
         if service.owner == owner.definition.id then self.services[name] = nil end
@@ -446,12 +455,16 @@ function Kernel:_uiLoop()
             self:_measure()
             if oldWidth~=self.width or oldHeight~=self.height then
                 for _,owner in ipairs(self.appOrder) do
+                    for window in pairs(owner.windows) do window:resize() end
                     self:_invoke(owner,"resize",self.width,self.height)
                     if not self.running then return end
                 end
             end
             for _,owner in ipairs(self.appOrder) do
                 self:_invoke(owner,"update",now,(now-lastTick)/1000)
+                if owner.enabled and not owner.starting then
+                    for window in pairs(owner.windows) do window:update(now) end
+                end
                 if not self.running then return end
             end
             lastTick=now nextAt=util.epoch()+50

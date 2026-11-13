@@ -1,60 +1,78 @@
 local util=require("m2os.lib.util")
+local Window=require("m2os.lib.window")
 local Panel={}
 Panel.__index=Panel
 local ROWS=5
 function Panel.new(ctx,request)
-    return setmetatable({ctx=ctx,request=request,open=false},Panel)
+    local self=setmetatable({ctx=ctx,request=request,open=false},Panel)
+    local options={width=360,height=294,mode="restock",
+        build=function(window) self:build(window) end,
+        update=function(window) self:updateContents(window) end,
+        onClose=function() self.open=false self.session=nil end}
+    self.window=ctx.ui.window and ctx.ui.window(options) or Window.new(ctx,options)
+    return self
 end
-function Panel:draw()
-    if not self.open then return end
-    local ctx=self.ctx
-    ctx.ui.clear()
-    local width,height=ctx.system.getSize()
-    local s=math.max(0.1,math.min(1,(width-12)/360,(height-12)/294))
-    local x,y=(width-360*s)/2,(height-294*s)/2
-    local theme=ctx.config.theme
-    local function text(px,py,value,color,size)
-        ctx.ui.text(x+px*s,y+py*s,value,color or theme.white,(size or 0.76)*s,76,false)
+function Panel:build(window)
+    local theme=self.ctx.config.theme
+    window:text(nil,12,10,"АВТОПОПОЛНЕНИЕ",theme.white,1)
+    window:text(nil,12,28,"На складе: наведи на предмет и нажми K",theme.gray,0.72)
+    for row=1,ROWS do
+        local offset=row
+        window:button("row"..row,12,45+(row-1)*23,336,21,"",function()
+            self:select(math.floor((self.selected-1)/ROWS)*ROWS+offset) self:draw()
+        end)
     end
-    self.hits={}
-    local function button(id,px,py,w,h,label,run,color)
-        ctx.ui.rectangle(x+px*s,y+py*s,w*s,h*s,color or 0x293044,1,73)
-        text(px+4,py+5,label)
-        self.hits[#self.hits+1]={id=id,x=x+px*s,y=y+py*s,w=w*s,h=h*s,run=run}
-    end
-    ctx.ui.textureRect(x,y,360*s,294*s,theme.background,1,70)
-    ctx.ui.rectangle(x,y,360*s,2*s,theme.purple,1,72)
-    text(12,10,"АВТОПОПОЛНЕНИЕ",theme.white,1)
-    text(12,28,"На складе: наведи на предмет и нажми K",theme.gray,0.72)
+    window:text("item",12,166,"",theme.gray,0.70)
+    window:text(nil,12,180,"Считается общий остаток по ID, включая все варианты",theme.gray,0.66)
+    window:text(nil,12,201,"Держать минимум:")
+    window:button("count",144,195,90,21,"",function() self.focus=true self:draw() end)
+    window:button("minus",240,195,47,21,"-",function() self:adjust(-1) end)
+    window:button("plus",293,195,55,21,"+",function() self:adjust(1) end)
+    window:button("save",12,224,108,21,"Сохранить",function() self:save() end)
+    window:button("toggle",126,224,108,21,"",function() self:change(false) end)
+    window:button("remove",240,224,108,21,"Удалить",function() self:change(true) end)
+    window:text("status",12,252,"",theme.gray,0.72)
+    window:text(nil,12,274,"Enter: сохранить · Колесо/↑↓: правило · Esc: закрыть",theme.gray,0.66)
+end
+function Panel:updateContents(window)
+    local theme=self.ctx.config.theme
     local page=math.floor((self.selected-1)/ROWS)
     for row=1,ROWS do
         local index=page*ROWS+row
         local rule=self.rules[index]
-        if rule then
-            button("rule"..index,12,45+(row-1)*23,336,21,
-                util.short((rule.enabled and "+ " or "- ")..rule.label,35).." ≥"..rule.count,
-                function() self:select(index) self:draw() end,index==self.selected and theme.purple or nil)
-        end
+        local id="row"..row
+        window:set(id..".label","setContent",rule and
+            (util.short((rule.enabled and "+ " or "- ")..rule.label,35).." ≥"..rule.count) or "")
+        window:set(id..".background","setColor",index==self.selected and theme.purple or 0x293044)
+        window:set(id..".background","setOpacity",rule and 1 or 0)
+        window:enableButton(id,rule~=nil and not self.pending)
     end
     local rule=self.rules[self.selected]
-    text(12,166,util.short(rule and rule.name or "Выбери предмет на складе клавишей K",53),theme.gray,0.70)
-    text(12,180,"Считается общий остаток по ID, включая все варианты",theme.gray,0.66)
-    text(12,201,"Держать минимум:")
-    button("count",144,195,90,21,(self.focus and "> " or "")..self.count,
-        function() self.focus=true self:draw() end,self.focus and theme.purple or nil)
-    button("minus",240,195,47,21,"-",function() self:adjust(-1) end)
-    button("plus",293,195,55,21,"+",function() self:adjust(1) end)
-    button("save",12,224,108,21,"Сохранить",function() self:save() end)
-    button("toggle",126,224,108,21,rule and rule.enabled and "Выключить" or "Включить",
-        function() self:change(false) end)
-    button("remove",240,224,108,21,"Удалить",function() self:change(true) end)
+    window:set("item","setContent",util.short(rule and rule.name or "Выбери предмет на складе клавишей K",53))
+    window:set("count.label","setContent",(self.focus and "> " or "")..self.count)
+    window:set("count.background","setColor",self.focus and theme.purple or 0x293044)
+    window:set("toggle.label","setContent",rule and rule.enabled and "Выключить" or "Включить")
+    for _,id in ipairs({"count","minus","plus","save","toggle","remove"}) do window:enableButton(id,not self.pending) end
     local telemetry=rule and ((rule.current~=nil and ("Остаток: "..rule.current..". ") or "")..(rule.message or "")) or ""
-    text(12,252,util.short(self.message or telemetry,53),self.bad and theme.red or theme.gray,0.72)
-    text(12,274,"Enter: сохранить · Колесо/↑↓: правило · Esc: закрыть",theme.gray,0.66)
-    self.x,self.y,self.scale=x,y,s
-    self.px=util.clamp(self.px or width/2,x,x+360*s)
-    self.py=util.clamp(self.py or height/2,y,y+294*s)
-    self.cursor=util.createTopCursor(ctx.ui,self.px,self.py,90,theme)
+    window:set("status","setContent",util.short(self.message or telemetry,53))
+    window:set("status","setColor",self.bad and theme.red or theme.gray)
+end
+function Panel:draw() self.window:draw() end
+function Panel:frame(now) self.window:update(now) end
+function Panel:resize() self.window:resize() end
+function Panel:failure(err)
+    local message=tostring(err or "Ошибка запроса")
+    local lower=message:lower()
+    if lower:find("unknown operation",1,true) or lower:find("unknow operation",1,true)
+            or lower:find("нужна версия 12",1,true) then
+        self.unsupported=true
+        return "Обнови и перезапусти мост хранилища (версия 12+)"
+    end
+    return message
+end
+function Panel:bridgeReady()
+    self.unsupported=false
+    if self.open then self.pollAt=0 end
 end
 function Panel:select(index)
     self.selected=index
@@ -98,7 +116,7 @@ function Panel:refresh(candidate)
         self.pollPending=false
         if self.pending or revision~=self.revision then return end
         if ok then self:apply(data,candidate)
-        else self.message=tostring(err or "Обнови мост хранилища") self.bad=true end
+        else self.message=self:failure(err) self.bad=true end
         self:draw()
     end)
 end
@@ -107,18 +125,15 @@ function Panel:show(item)
     self.revision=0
     self.rules={} self.selected=1 self.count="64" self.focus=false self.dirty=false
     self.pending=false self.candidate=item and util.copy(item) or nil
-    self.px,self.py=nil,nil
+    self.unsupported=false
     self.message="Чтение правил…" self.bad=false
     self.ctrl,self.shift=false,false
-    self.ctx.system.setInputMode("restock")
-    self:draw()
-    self.ctx.system.flushOverlay()
+    self.window:show()
     self:refresh(self.candidate)
 end
 function Panel:close()
     self.open=false self.session=nil
-    if self.ctx.system.getInputMode()=="restock" then self.ctx.system.setInputMode(nil) end
-    self.ctx.ui.clear()
+    self.window:close()
 end
 function Panel:adjust(direction)
     local step=self.shift and 64 or self.ctrl and 10 or 1
@@ -135,7 +150,7 @@ function Panel:mutate(operation,payload)
         if not self.open or self.session~=session then return end
         self.pending=false
         if ok then self.candidate=nil self.dirty=false self:apply(data) self.message="Сохранено"
-        else self.message=tostring(err or "Ошибка сохранения") self.bad=true end
+        else self.message=self:failure(err) self.bad=true end
         self:draw()
     end)
 end
@@ -152,7 +167,7 @@ function Panel:change(remove)
     self:mutate(remove and "restock_remove" or "restock_toggle",{id=rule.id,enabled=not rule.enabled})
 end
 function Panel:update(now)
-    if self.open and not self.pending and not self.pollPending and now>=(self.pollAt or 0) then self:refresh() end
+    if self.open and not self.unsupported and not self.pending and not self.pollPending and now>=(self.pollAt or 0) then self:refresh() end
 end
 function Panel:onEvent(event,...)
     if not self.open then return end
@@ -180,12 +195,8 @@ function Panel:onEvent(event,...)
             self.count=self.count..char self.dirty=true self:draw()
         end
         return true
-    elseif event=="player_mouse_move" and self.scale then
-        self.px=util.clamp(self.px+(values[#values-1] or 0),self.x,self.x+360*self.scale)
-        self.py=util.clamp(self.py+(values[#values] or 0),self.y,self.y+294*self.scale)
-        util.moveTopCursor(self.cursor,self.px,self.py,90)
-        local now=util.epoch()
-        if now>=(self.flushAt or 0) then self.flushAt=now+25 self.ctx.system.flushOverlay() end
+    elseif event=="player_mouse_move" then
+        self.window:move(values[#values-1] or 0,values[#values] or 0)
         return true
     elseif event=="player_mouse_scroll" then
         if self.pending then return true end
@@ -195,11 +206,7 @@ function Panel:onEvent(event,...)
         return true
     elseif event=="player_mouse_click" then
         if self.pending then return true end
-        if code==0 or code==1 then
-            for _,hit in ipairs(self.hits or {}) do
-                if self.px>=hit.x and self.px<hit.x+hit.w and self.py>=hit.y and self.py<hit.y+hit.h then hit.run() break end
-            end
-        end
+        self.window:click(code)
         return true
     elseif event=="paste" or event=="player_interaction" then return true end
 end

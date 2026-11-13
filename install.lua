@@ -3,9 +3,9 @@
 
 local INSTALLER_VERSION = "2.5-pinned-updates"
 local args = { ... }
-local DEFAULT_REVISION = "experimental/async-gui"
+local DEFAULT_REVISION = "master"
 local revision = args[2] or DEFAULT_REVISION
-if revision ~= DEFAULT_REVISION and revision ~= "master"
+if revision ~= DEFAULT_REVISION and revision ~= "experimental/async-gui"
         and not (revision:match("^%x+$") and #revision >= 7 and #revision <= 40) then
     error("revision must be experimental/async-gui, master or a Git commit hash (7-40 characters)", 0)
 end
@@ -64,6 +64,7 @@ local common = {
 }
 
 local glasses = {
+    { "lib/window.lua", "/m2os/lib/window.lua" },
     { "lib/scheduler.lua", "/m2os/lib/scheduler.lua" },
     { "lib/block_search.lua", "/m2os/lib/block_search.lua" },
     { "apps/block_search.lua", "/m2os/apps/block_search.lua" },

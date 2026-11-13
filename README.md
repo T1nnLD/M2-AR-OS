@@ -3,23 +3,23 @@
 M2OS is a modular HUD for CC:Tweaked and Advanced Peripherals 0.8.2a. It does
 not modify or start `d.lua`.
 
-This is the experimental `experimental/async-gui` branch, based on the stable
-HUD. GUI/input, application logic and sensor polling run in independent
-cooperative tasks. The `master` branch remains the stable synchronous runtime;
-the separate chestplate experiment is not included here.
+The stable `master` branch includes the asynchronous runtime tested in
+`experimental/async-gui`. GUI/input, application logic and sensor polling run
+in independent cooperative tasks. The separate chestplate experiment remains
+on `experimental/smart-chestplate`.
 
 ## One-command install
 
 On the Smart Glasses computer:
 
 ```text
-wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/experimental/async-gui/install.lua glasses
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua glasses
 ```
 
 On the computer connected to the Create storage network:
 
 ```text
-wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/experimental/async-gui/install.lua server
+wget run https://raw.githubusercontent.com/T1nnLD/M2-AR-OS/master/install.lua server
 ```
 
 Use `all` instead of `glasses` or `server` to install both roles. Running the
@@ -43,10 +43,10 @@ m2os
 The first start creates `/m2os-state.cfg`. App switches selected through the
 radial menu are remembered there.
 
-## Experimental asynchronous runtime
+## Asynchronous runtime
 
-Only the glasses need updating to try the new runtime. This branch's installer
-defaults to `experimental/async-gui`; use this branch's URL for future updates.
+Only the glasses need updating for the asynchronous runtime. The stable installer
+defaults to `master`; use the master URL for future updates.
 The startup message includes `(async)` so the installed runtime can be checked.
 
 - GUI updates and input have their own task. Input feedback flushes immediately
@@ -260,6 +260,14 @@ Update both the glasses and storage bridge. Use the existing Inventory Manager
 with the player's bound Memory Card and the same named wired storage network
 as ordinary withdrawals. No additional peripheral is required.
 
+Restocking requires bridge version 12 or newer (or an advertised `restock`
+capability). The glasses report an update instruction instead of sending
+unsupported restock requests to an older bridge. Update and restart the actual
+bridge computer as well as the glasses. Its terminal shows the running version;
+`m2ctl ping` also returns it. A late older discovery response cannot replace an
+already selected newer bridge. Set `storage.serverId` to choose a specific bridge
+when multiple player storage networks are present.
+
 In the storage panel, hover an item and press **K** while the search field is
 inactive. Enter the minimum quantity and click **Сохранить**. The Inventory tab
 also accepts K for its selected item. For example, with a target of 64 bread and
@@ -267,6 +275,10 @@ also accepts K for its selected item. For example, with a target of 64 bread and
 use Ctrl for ten and Shift for 64; clicking the number enables direct typing.
 The radial action **АВТОПОПОЛНЕНИЕ** opens saved rules so they can be edited,
 disabled, enabled or deleted. Esc closes the panel.
+The panel uses the shared retained window component: it waits for initial GUI
+dimensions, updates widgets in place and retains its cursor between status
+polls. Resizes are coalesced and the prior layout remains clickable until its
+replacement is ready. New apps can use the same behavior with `ctx.ui.window`.
 
 Rules count the total quantity by item registry ID, including all variants of
 that ID. They maintain a minimum, never remove surplus and do not craft missing

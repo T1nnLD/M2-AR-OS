@@ -15,14 +15,17 @@ os.cancelTimer=function(id) timers[id]=nil end
 util.readTable=function(_,fallback) return fallback end
 util.writeTable=function() return true end
 local flushes,removed=0,0
-local overlay={getGuiSize=function() return 800,500,1 end,setAutoUpdate=function() end,
+local screenW,screenH=800,500
+local overlay={getGuiSize=function() return screenW,screenH,1 end,setAutoUpdate=function() end,
     getEyePosition=function() return 0,65.62,0 end,update=function() flushes=flushes+1 end,
     removeObject=function() removed=removed+1 end}
 local objectID=0
-overlay.createBox=function()
+local function create()
     objectID=objectID+1 local id=objectID
-    return {getId=function() return id end}
+    return {getId=function() return id end,setPos=function() end,setColor=function() end,
+        setContent=function() end,setImageSize=function() end,setPixel=function() end}
 end
+for _,kind in ipairs({'Box','Text','Rectangle','Texture'}) do overlay['create'..kind]=create end
 smartglasses={modules={overlay=overlay}}
 local Kernel=require('m2os.kernel')
 local kernel=Kernel.new({name='test',version='async',stateFile='/test',modules={},theme={red=1,green=2}})
@@ -111,6 +114,21 @@ assert(failed==3 and not kernel.apps.errors.enabled,'GUI successes must not rese
 kernel:setEnabled('errors',true) drain()
 assert(failed==4 and kernel.apps.errors.enabled,'re-enabling must start with a fresh failure count')
 kernel:setEnabled('errors',false)
+local window
+kernel:register({id='owned_window',persistent=false,start=function(ctx)
+    window=ctx.ui.window({mode='owned_dialog',build=function(w) w:text('label',12,12,'test') end})
+    window:show()
+end})
+kernel:setEnabled('owned_window',true) drain()
+advance(500)
+assert(window.built and kernel.inputMode=='owned_dialog','kernel must build owned windows automatically')
+local x=window.x
+screenW=1000 screenH=600 advance(550) advance(700)
+assert(window.x==x,'retain stable geometry during a resize burst')
+advance(750)
+assert(window.x~=x,'kernel must resize a window without app-specific resize callbacks')
+kernel:setEnabled('owned_window',false)
+assert(not window.open and kernel.inputMode==nil,'disabling an app must close its windows')
 kernel:register({id='broken_start',persistent=false,start=function(ctx)
     ctx.system.setInputMode('custom_dialog')
     ctx.services.provide('partial',{})
@@ -123,5 +141,5 @@ assert(not kernel.apps.broken_start.enabled and kernel.inputMode==nil and not ke
 assert(flushes>0)
 step({'key',100}) kernel:_shutdown()
 assert(not kernel.running and kernel.inputMode==nil and next(kernel.scheduler.tasks)==nil)
-assert(next(kernel.scheduler.timers)==nil and removed==2,'shutdown must cancel tasks/timers and remove owned objects')
+assert(next(kernel.scheduler.timers)==nil and removed==objectID,'shutdown must cancel tasks/timers and remove owned objects')
 print('async kernel UI, independent sensors, backend queues, startup and shutdown tests: OK')

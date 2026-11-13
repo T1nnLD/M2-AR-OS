@@ -19,7 +19,7 @@ local function object()
 end
 local theme={white=1,gray=2,purple=3,background=4,red=5,green=6,blue=7,amber=8,yellow=9}
 local ctx={config={theme=theme,storage={protocol='test',sharedKey='secret',gridColumns=8,gridRows=4}},
-    ui={clear=function() end,rectangle=object,textureRect=object,text=object,raw=object},
+    ui={clear=function() end,remove=function() end,rectangle=object,textureRect=object,text=object,raw=object},
     notify=function() end,
     system={getSize=function() return 500,400 end,getModule=function() return nil end,
         getInputMode=function() return mode end,setInputMode=function(value) mode=value end,flushOverlay=function() end},
@@ -31,9 +31,19 @@ local function reply(data)
     app.onEvent(ctx,'rednet_message',42,{kind='response',key='secret',id=request.id,ok=true,data=data},'test')
 end
 app.start(ctx)
+app.onEvent(ctx,'rednet_message',41,{kind='hello',key='secret',version=10},'test')
+local reason
+services.storage.request('restock_status',{},function(ok,_,err) assert(not ok) reason=err end)
+assert(#requests==0 and reason:find('версия 12',1,true),'reject unsupported restock RPCs locally with an update instruction')
 app.onEvent(ctx,'rednet_message',42,{kind='hello',key='secret',version=12},'test')
+app.onEvent(ctx,'rednet_message',41,{kind='hello',key='secret',version=10},'test')
+assert(services.storage.status().serverId==42 and services.storage.status().restock,
+    'a late old bridge must not replace the newer restock-capable bridge')
 services.storage.show()
 local stock={items={{name='minecraft:bread',displayName='Хлеб',count=100}}}
+local pending=requests[#requests]
+app.onEvent(ctx,'rednet_message',41,{kind='response',key='secret',id=pending.id,ok=true,data={items={}}},'test')
+assert(services.storage.status().serverId==42,'ignore replies from a different bridge')
 reply(stock)
 assert(mode=='storage')
 app.onEvent(ctx,'key',keys.f)
@@ -57,5 +67,8 @@ reply({rules={}})
 app.resize(ctx)
 app.onEvent(ctx,'keyboard_close')
 assert(mode==nil)
+app.onEvent(ctx,'rednet_message',42,{kind='hello',key='secret',version=7},'test')
+assert(not services.storage.status().online and not services.storage.status().restock,
+    'a downgrade of the selected bridge must invalidate its old capabilities')
 app.stop(ctx)
 print('storage K shortcut, search input, restock replies and radial action tests: OK')
